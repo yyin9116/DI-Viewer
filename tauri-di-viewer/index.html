@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DI-Viewer Control</title>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <main class="app">
+      <header class="top">
+        <h1>DI-Viewer Tauri</h1>
+        <p id="status">Ready</p>
+      </header>
+
+      <section class="card">
+        <label for="urlInput">Address</label>
+        <div class="row">
+          <input id="urlInput" type="text" placeholder="https://limestart.cn/" />
+          <button id="goBtn">Go</button>
+        </div>
+        <div class="row wrap">
+          <button id="homeBtn">Home</button>
+          <button id="showHideBtn">Show/Hide</button>
+          <button id="insideBtn">Inside</button>
+          <button id="onTopBtn">OnTop</button>
+          <button id="sidebarBtn">Sidebar</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Window</h2>
+        <div class="row wrap">
+          <button id="minBtn">Minimize</button>
+          <button id="maxBtn">Max/Restore</button>
+          <button id="closeBtn" class="danger">Exit</button>
+        </div>
+        <div class="row">
+          <label for="opacityRange">Opacity</label>
+          <input id="opacityRange" type="range" min="0.2" max="1" step="0.05" />
+          <span id="opacityLabel">1.00</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Video Actions</h2>
+        <div class="row wrap">
+          <button data-action="toggle_play_pause">Play/Pause</button>
+          <button data-action="video_backward">-5s</button>
+          <button data-action="video_forward">+5s</button>
+          <button data-action="request_full_screen">Fullscreen</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Hotkeys</h2>
+        <p class="hint">Format examples: <code>Alt+Space</code>, <code>Ctrl+Q</code>, <code>Backquote</code>.</p>
+        <div id="hotkeyForm" class="grid"></div>
+        <div class="row wrap">
+          <button id="saveHotkeysBtn">Save Hotkeys</button>
+          <button id="resetHotkeysBtn">Reset</button>
+        </div>
+      </section>
+
+      <section class="card help">
+        <h2>Key Features</h2>
+        <ul>
+          <li>Browser window controls</li>
+          <li>Global hotkeys</li>
+          <li>Mouse click-through mode</li>
+          <li>Edge snapping</li>
+          <li>Tray show/hide/exit</li>
+          <li>State persistence</li>
+        </ul>
+      </section>
+    </main>
+  </body>
+</html>

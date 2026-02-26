@@ -1,0 +1,10 @@
+{
+  "identifier": "default",
+  "description": "Default capability for DI-Viewer control panel.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

@@ -1,0 +1,23 @@
+﻿# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local runtime data
+pyside-di-viewer/history/*.json
+pyside-di-viewer/bookmarks/*.json
+pyside-di-viewer/config/config.json
+
+# Local planning docs (do not publish)
+/*.md
+
+# Tauri / Vite build artifacts
+tauri-di-viewer/node_modules/
+tauri-di-viewer/dist/
+tauri-di-viewer/src-tauri/target/
+tauri-di-viewer/src-tauri/gen/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
