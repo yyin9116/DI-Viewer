@@ -18,7 +18,7 @@ jobs:
             bundle: nsis
             platform_name: Windows
           - os: ubuntu-22.04
-            bundle: appimage,deb
+            bundle: appimage
             platform_name: Linux
           - os: macos-latest
             bundle: dmg
@@ -65,7 +65,7 @@ jobs:
             Automated release for DI-Viewer.
             Included platforms:
             - Windows (NSIS installer)
-            - Linux (AppImage + deb)
+            - Linux (AppImage)
             - macOS (dmg)
           releaseDraft: false
           prerelease: false
