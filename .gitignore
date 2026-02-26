@@ -10,7 +10,7 @@ pyside-di-viewer/bookmarks/*.json
 pyside-di-viewer/config/config.json
 
 # Local planning docs (do not publish)
-/*.md
+/技术方案说明.md
 
 # Tauri / Vite build artifacts
 tauri-di-viewer/node_modules/
