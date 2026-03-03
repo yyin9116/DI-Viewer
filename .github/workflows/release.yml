@@ -19,13 +19,14 @@ jobs:
           - name: windows-x64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            tauri_args: --no-bundle --target x86_64-pc-windows-msvc
-            binary_path: tauri-di-viewer/src-tauri/target/x86_64-pc-windows-msvc/release/tauri-di-viewer.exe
+            tauri_args: --bundles nsis,msi --target x86_64-pc-windows-msvc
+            nsis_glob: tauri-di-viewer/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            msi_glob: tauri-di-viewer/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           - name: macos-arm64
             os: macos-14
             rust_target: aarch64-apple-darwin
             tauri_args: --bundles dmg --target aarch64-apple-darwin
-            bundle_glob: tauri-di-viewer/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            dmg_glob: tauri-di-viewer/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,18 +51,24 @@ jobs:
         working-directory: tauri-di-viewer
         run: npm run tauri build -- ${{ matrix.tauri_args }}
 
-      - name: Stage Windows zip asset
+      - name: Stage Windows assets
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
-          $exePath = "${{ matrix.binary_path }}"
-          if (-not (Test-Path $exePath)) {
-            throw "Windows executable not found: $exePath"
+
+          $nsis = Get-ChildItem -Path "${{ matrix.nsis_glob }}" -File | Select-Object -First 1
+          if (-not $nsis) {
+            throw "NSIS executable not found by: ${{ matrix.nsis_glob }}"
           }
-          $zipPath = "release-assets/DI-Viewer-${{ github.ref_name }}-windows-x64.zip"
-          Compress-Archive -Path $exePath -DestinationPath $zipPath -Force
+          Copy-Item -Path $nsis.FullName -Destination "release-assets/DI-Viewer-${{ github.ref_name }}-windows-x64.exe"
+
+          $msi = Get-ChildItem -Path "${{ matrix.msi_glob }}" -File | Select-Object -First 1
+          if (-not $msi) {
+            throw "MSI package not found by: ${{ matrix.msi_glob }}"
+          }
+          Copy-Item -Path $msi.FullName -Destination "release-assets/DI-Viewer-${{ github.ref_name }}-windows-x64.msi"
 
       - name: Stage macOS dmg asset
         if: runner.os == 'macOS'
@@ -69,13 +76,12 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
-          $files = Get-ChildItem -Path "${{ matrix.bundle_glob }}" -File
+          $files = Get-ChildItem -Path "${{ matrix.dmg_glob }}" -File
           if (-not $files) {
-            throw "No bundle files found by: ${{ matrix.bundle_glob }}"
+            throw "No bundle files found by: ${{ matrix.dmg_glob }}"
           }
-          foreach ($file in $files) {
-            Copy-Item -Path $file.FullName -Destination "release-assets"
-          }
+          $dmg = $files | Select-Object -First 1
+          Copy-Item -Path $dmg.FullName -Destination "release-assets/DI-Viewer-${{ github.ref_name }}-macos-arm64.dmg"
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
@@ -116,7 +122,7 @@ jobs:
           if [[ -f "${notes_file}" ]]; then
             notes="$(cat "${notes_file}")"
           else
-            notes=$'Automated desktop release.\n\nIncluded artifacts:\n- Windows x64 (zip)\n- macOS arm64 (dmg)\n- SHA256SUMS'
+            notes=$'Automated desktop release.\n\nIncluded artifacts:\n- Windows x64 (exe installer)\n- Windows x64 (msi installer)\n- macOS arm64 (dmg)\n- SHA256SUMS'
           fi
 
           delim="$(uuidgen)"
