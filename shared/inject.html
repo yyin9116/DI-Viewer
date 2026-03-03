@@ -1,64 +1,70 @@
-<!-- DI-Viewer - injected UI -->
-
+﻿<!-- DI-Viewer injected UI -->
 <div class="diviewer-overlay" id="diviewer-overlay"></div>
 
 <div class="diviewer-dock-bar" id="diviewer-dock">
-  <button id="diviewer-homeBtn" class="dock-btn" title="首页 Home">
-    <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg><span class="dock-label">首页</span>
+  <button id="diviewer-dockQuickBtn" class="dock-btn dock-item-btn" data-dock="quick" data-tab="0" data-i18n-title="dock.quick">
+    <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+    <span class="dock-label" data-i18n="dock.quick">Quick</span>
   </button>
-  <button id="diviewer-searchBtn" class="dock-btn" title="导航 Search">
-    <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg><span class="dock-label">导航</span>
+  <button id="diviewer-dockNavBtn" class="dock-btn dock-item-btn" data-dock="navigate" data-tab="1" data-i18n-title="dock.navigate">
+    <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+    <span class="dock-label" data-i18n="dock.navigate">Navigate</span>
   </button>
-  <button id="diviewer-setKeyBtn" class="dock-btn" title="快捷键 Shortcuts">
-    <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.49.49 0 00-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1115.6 12 3.6 3.6 0 0112 15.6z"/></svg><span class="dock-label">快捷键</span>
+  <button id="diviewer-dockMediaBtn" class="dock-btn dock-item-btn" data-dock="media" data-tab="2" data-i18n-title="dock.media">
+    <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+    <span class="dock-label" data-i18n="dock.media">Media</span>
   </button>
-  <button id="diviewer-helpBtn" class="dock-btn" title="帮助 Help">
-    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/></svg><span class="dock-label">帮助</span>
+  <button id="diviewer-dockKeysBtn" class="dock-btn dock-item-btn" data-dock="shortcuts" data-tab="3" data-i18n-title="dock.shortcuts">
+    <svg viewBox="0 0 24 24"><path d="M20 5H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zM6.5 16C5.67 16 5 15.33 5 14.5S5.67 13 6.5 13 8 13.67 8 14.5 7.33 16 6.5 16zm0-5C5.67 11 5 10.33 5 9.5S5.67 8 6.5 8 8 8.67 8 9.5 7.33 11 6.5 11zM20 9h-9V8h9v1zm-4 3h-5v-1h5v1zm4 3h-9v-1h9v1z"/></svg>
+    <span class="dock-label" data-i18n="dock.shortcuts">Shortcuts</span>
   </button>
-  <button id="diviewer-bookmarkDockBtn" class="dock-btn" title="书签 Bookmarks">
-    <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg><span class="dock-label">书签</span>
+  <button id="diviewer-dockHelpBtn" class="dock-btn dock-item-btn" data-dock="help" data-tab="4" data-i18n-title="dock.help">
+    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm2.07-7.75l-.9.92C13.45 12.9 13 13.5 13 15h-2v-.5c0-1.1.45-2.1 1.17-2.83l1.24-1.26c.37-.36.59-.86.59-1.41 0-1.1-.9-2-2-2s-2 .9-2 2H8c0-2.21 1.79-4 4-4s4 1.79 4 4c0 .88-.36 1.68-.93 2.25z"/></svg>
+    <span class="dock-label" data-i18n="dock.help">Help</span>
+  </button>
+  <button id="diviewer-bookmarkDockBtn" class="dock-btn dock-item-btn" data-dock="bookmarks" data-tab="1" data-i18n-title="dock.bookmarks">
+    <svg viewBox="0 0 24 24"><path d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+    <span class="dock-label" data-i18n="dock.bookmarks">Bookmarks</span>
   </button>
 </div>
 
 <div class="diviewer-tab-container" id="diviewer-panel">
+  <div class="diviewer-panel-head">
+    <strong class="diviewer-panel-title">
+      <span class="title-icon" aria-hidden="true"><img class="title-icon-img" src="data:image/png;base64,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" alt="" /></span>
+      <span data-i18n="panel.title">DI-Viewer</span>
+    </strong>
+    <div class="diviewer-panel-head-actions">
+      <label for="diviewer-langSelect" data-i18n="panel.lang">Language</label>
+      <select id="diviewer-langSelect">
+        <option value="zh">中文</option>
+        <option value="en">English</option>
+      </select>
+    </div>
+  </div>
+
   <div class="diviewer-tab-box">
-    <button class="tab-btn active">Window</button>
-    <button class="tab-btn">Navigate</button>
-    <button class="tab-btn">Shortcuts</button>
-    <button class="tab-btn">Help</button>
+    <button class="tab-btn active" data-i18n="tab.quick">Quick</button>
+    <button class="tab-btn" data-i18n="tab.navigate">Navigate</button>
+    <button class="tab-btn" data-i18n="tab.media">Media</button>
+    <button class="tab-btn" data-i18n="tab.shortcuts">Shortcuts</button>
+    <button class="tab-btn" data-i18n="tab.help">Help</button>
     <div class="diviewer-line"></div>
   </div>
 
   <div class="diviewer-content-box">
     <div class="content active">
       <div class="diviewer-win-controls">
-        <button id="diviewer-homePageBtn" title="Home">
-          <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg><span>Home</span>
-        </button>
-        <button id="diviewer-onTopBtn" title="Always on top">
-          <svg viewBox="0 0 24 24"><path d="M16 12V4h1V2H7v2h1v8l-2 2v2h5.2v6h1.6v-6H18v-2l-2-2z"/></svg><span>On Top</span>
-        </button>
-        <button id="diviewer-pipBtn" title="Picture in picture">
-          <svg viewBox="0 0 24 24"><path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/></svg><span>PiP</span>
-        </button>
-        <button id="diviewer-insideModeBtn" title="Click-through mode">
-          <svg viewBox="0 0 24 24"><path d="M17 1H7c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-2-2-2zm0 18H7V5h10v14zM12.5 8.9l-1 1L13 11.4l-1.5 1.5 1 1L15 11.4l-2.5-2.5z"/></svg><span>Inside</span>
-        </button>
-        <button id="diviewer-opacityUpBtn" title="Increase opacity">
-          <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span>Opacity+</span>
-        </button>
-        <button id="diviewer-opacityDownBtn" title="Decrease opacity">
-          <svg viewBox="0 0 24 24"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46A11.8 11.8 0 001 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z"/></svg><span>Opacity-</span>
-        </button>
-        <button id="diviewer-minimizeBtn" title="Minimize window">
-          <svg viewBox="0 0 24 24"><path d="M6 19h12v2H6z"/></svg><span>Min</span>
-        </button>
-        <button id="diviewer-closeBtn" title="Exit app">
-          <svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg><span>Exit</span>
-        </button>
-        <button id="diviewer-lockPosBtn" title="Lock current position">
-          <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg><span>Lock</span>
-        </button>
+        <button id="diviewer-homePageBtn"><span data-i18n="quick.home">Home</span></button>
+        <button id="diviewer-showHideBtn"><span id="diviewer-showHideLabel" data-i18n="quick.hide">Hide</span></button>
+        <button id="diviewer-onTopBtn"><span data-i18n="quick.onTop">On Top</span></button>
+        <button id="diviewer-insideModeBtn"><span data-i18n="quick.inside">Inside</span></button>
+        <button id="diviewer-opacityDownBtn"><span data-i18n="quick.opacityDown">Opacity-</span></button>
+        <button id="diviewer-opacityUpBtn"><span data-i18n="quick.opacityUp">Opacity+</span></button>
+        <button id="diviewer-maximizeBtn"><span data-i18n="quick.maxRestore">Max/Restore</span></button>
+        <button id="diviewer-minimizeBtn"><span data-i18n="quick.minimize">Minimize</span></button>
+        <button id="diviewer-lockPosBtn"><span data-i18n="quick.lock">Lock</span></button>
+        <button id="diviewer-closeBtn"><span data-i18n="quick.exit">Exit</span></button>
       </div>
 
       <div class="diviewer-size-presets">
@@ -67,68 +73,91 @@
         <button data-ratio="0.5">1/2</button>
         <button data-ratio="0.75">3/4</button>
       </div>
+
+      <p class="diviewer-quick-hint" id="diviewer-quickState"></p>
     </div>
 
     <div class="content">
       <div class="diviewer-search-row">
-        <input type="text" class="diviewer-address-input" placeholder="Type URL...">
-        <button id="diviewer-search-button">Go</button>
+        <input type="text" class="diviewer-address-input" data-i18n-placeholder="nav.placeholder" placeholder="Type URL...">
+        <button id="diviewer-search-button" data-i18n="nav.go">Go</button>
       </div>
       <div class="diviewer-nav-row">
-        <button id="diviewer-backBtn"><svg viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>Back</button>
-        <button id="diviewer-forwardBtn">Forward<svg viewBox="0 0 24 24"><path d="M12 4l-1.41 1.41L16.17 11H4v2h12.17l-5.58 5.59L12 20l8-8z"/></svg></button>
-        <button id="diviewer-refreshBtn"><svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>Refresh</button>
+        <button id="diviewer-backBtn" data-i18n="nav.back">Back</button>
+        <button id="diviewer-forwardBtn" data-i18n="nav.forward">Forward</button>
+        <button id="diviewer-refreshBtn" data-i18n="nav.refresh">Refresh</button>
       </div>
       <div class="diviewer-tab-session">
         <div class="diviewer-tab-session-header">
-          <span>Tabs</span>
-          <button id="diviewer-newTabBtn" title="New tab">+ New</button>
+          <span data-i18n="nav.tabs">Tabs</span>
+          <button id="diviewer-newTabBtn" data-i18n="nav.newTab">+ New</button>
         </div>
         <div id="diviewer-session-tab-list" class="diviewer-session-tab-list"></div>
       </div>
-      <div class="diviewer-bookmark-section">
+      <div class="diviewer-bookmark-section" id="diviewer-bookmarkSection">
         <div class="diviewer-bookmark-header">
-          <span>Bookmarks</span>
-          <button id="diviewer-addBookmarkBtn" title="Save current page">+ Save</button>
+          <span data-i18n="nav.bookmarks">Bookmarks</span>
+          <button id="diviewer-addBookmarkBtn" data-i18n="nav.addBookmark">+ Save</button>
         </div>
         <div id="diviewer-bookmark-list" class="diviewer-bookmark-list"></div>
       </div>
     </div>
 
     <div class="content">
-      <form class="diviewer-key-config-form">
-        <label>Play/Pause:</label>
-        <input class="key-config-input" type="text" id="diviewer-togglePlayPause" name="togglePlayPause" placeholder="`">
-        <label>Show/Hide:</label>
-        <input class="key-config-input" type="text" id="diviewer-toggleShowHide" name="toggleShowHide" placeholder="0">
-        <label>Inside mode:</label>
-        <input class="key-config-input" type="text" id="diviewer-insideMode" name="insideMode" placeholder="p">
-        <label>Fullscreen:</label>
-        <input class="key-config-input" type="text" id="diviewer-requestFullScreen" name="requestFullScreen" placeholder="o">
-        <label>Backward:</label>
-        <input class="key-config-input" type="text" id="diviewer-videoBackward" name="videoBackward" placeholder="5">
-        <label>Forward:</label>
-        <input class="key-config-input" type="text" id="diviewer-videoForward" name="videoForward" placeholder="6">
-        <label>Opacity -:</label>
-        <input class="key-config-input" type="text" id="diviewer-decreaseOpacity" name="decreaseOpacity" placeholder="7">
-        <label>Opacity +:</label>
-        <input class="key-config-input" type="text" id="diviewer-increaseOpacity" name="increaseOpacity" placeholder="8">
-      </form>
-      <div class="diviewer-config-actions">
-        <button type="button" id="diviewer-saveConfigBtn" class="btn-primary">Save</button>
-        <button type="button" id="diviewer-resetConfigBtn" class="btn-secondary">Reset</button>
+      <div class="diviewer-media-grid">
+        <button data-video-action="toggle_play_pause" data-i18n="media.playPause">Play/Pause</button>
+        <button data-video-action="video_backward" data-i18n="media.backward">-5s</button>
+        <button data-video-action="video_forward" data-i18n="media.forward">+5s</button>
+        <button data-video-action="request_full_screen" data-i18n="media.fullscreen">Fullscreen</button>
+        <button id="diviewer-pipBtn" data-i18n="media.pip">PiP</button>
       </div>
     </div>
 
     <div class="content">
-      <h2>DI-Viewer</h2>
+      <div class="diviewer-settings-row">
+        <label for="diviewer-dockColorSelect" data-i18n="key.theme">状态条颜色</label>
+        <select id="diviewer-dockColorSelect">
+          <option value="amber" data-i18n="theme.amber">Amber</option>
+          <option value="blue" data-i18n="theme.blue">Blue</option>
+          <option value="green" data-i18n="theme.green">Green</option>
+          <option value="rose" data-i18n="theme.rose">Rose</option>
+          <option value="slate" data-i18n="theme.slate">Slate</option>
+        </select>
+      </div>
+      <form class="diviewer-key-config-form" id="diviewer-hotkeyForm">
+        <label data-i18n="key.playPause">Play/Pause</label>
+        <input class="key-config-input" type="text" id="diviewer-togglePlayPause" name="togglePlayPause" placeholder="Backquote">
+        <label data-i18n="key.showHide">Show/Hide</label>
+        <input class="key-config-input" type="text" id="diviewer-toggleShowHide" name="toggleShowHide" placeholder="0">
+        <label data-i18n="key.inside">Inside</label>
+        <input class="key-config-input" type="text" id="diviewer-insideMode" name="insideMode" placeholder="P">
+        <label data-i18n="key.fullscreen">Fullscreen</label>
+        <input class="key-config-input" type="text" id="diviewer-requestFullScreen" name="requestFullScreen" placeholder="O">
+        <label data-i18n="key.backward">Backward</label>
+        <input class="key-config-input" type="text" id="diviewer-videoBackward" name="videoBackward" placeholder="5">
+        <label data-i18n="key.forward">Forward</label>
+        <input class="key-config-input" type="text" id="diviewer-videoForward" name="videoForward" placeholder="6">
+        <label data-i18n="key.opacityDown">Opacity -</label>
+        <input class="key-config-input" type="text" id="diviewer-decreaseOpacity" name="decreaseOpacity" placeholder="7">
+        <label data-i18n="key.opacityUp">Opacity +</label>
+        <input class="key-config-input" type="text" id="diviewer-increaseOpacity" name="increaseOpacity" placeholder="8">
+        <label data-i18n="key.close">Close App</label>
+        <input class="key-config-input" type="text" id="diviewer-closeWindow" name="closeWindow" placeholder="Ctrl+Q">
+      </form>
+      <div class="diviewer-config-actions">
+        <button type="button" id="diviewer-saveConfigBtn" class="btn-primary" data-i18n="key.save">Save</button>
+        <button type="button" id="diviewer-resetConfigBtn" class="btn-secondary" data-i18n="key.reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <h2 data-i18n="help.title">Tips</h2>
       <ol>
-        <li>Single browser window with overlay control panel.</li>
-        <li>Ctrl+T: open home in current window.</li>
-        <li>Ctrl+W: hide current browser window.</li>
-        <li>Window size presets: 1/4, 1/3, 1/2, 3/4.</li>
-        <li>Bookmarks: add, remove, persisted.</li>
-        <li>Position lock prevents accidental drag.</li>
+        <li data-i18n="help.1">Dock auto expands on hover and collapses automatically.</li>
+        <li data-i18n="help.2">Use Quick tab for window-level actions.</li>
+        <li data-i18n="help.3">Use Navigate tab for tabs and bookmarks.</li>
+        <li data-i18n="help.4">Use Media tab for playback and fullscreen actions.</li>
+        <li data-i18n="help.5">Configure global shortcuts in Shortcuts tab.</li>
       </ol>
     </div>
   </div>

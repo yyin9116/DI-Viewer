@@ -179,6 +179,10 @@ struct PersistedState {
     tab_urls: Vec<String>,
     #[serde(default)]
     active_tab_index: usize,
+    #[serde(default)]
+    ui_language: String,
+    #[serde(default = "default_dock_color")]
+    dock_color: String,
 }
 
 impl Default for PersistedState {
@@ -198,6 +202,8 @@ impl Default for PersistedState {
             bookmarks: Vec::new(),
             tab_urls: vec![HOME_URL.to_string()],
             active_tab_index: 0,
+            ui_language: String::new(),
+            dock_color: default_dock_color(),
         }
     }
 }
@@ -213,6 +219,7 @@ struct FrontendState {
     maximized: bool,
     position_locked: bool,
     sidebar_visible: bool,
+    ui_lang: String,
     bookmarks: Vec<BookmarkItem>,
     hotkeys: HotkeyConfig,
 }
@@ -251,7 +258,7 @@ struct RuntimeState {
 struct AppState {
     history_path: PathBuf,
     hotkeys_path: PathBuf,
-    ui_lang_zh: bool,
+    ui_lang_zh: AtomicBool,
     data: Mutex<RuntimeState>,
     next_tab_id: AtomicU64,
     closing_windows: Mutex<HashSet<String>>,
@@ -284,14 +291,91 @@ impl Drop for SnapGuard<'_> {
 }
 
 fn normalize_hotkey(value: String, fallback: &str) -> String {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return fallback.to_string();
+    fn normalize_token(token: &str) -> String {
+        let trimmed = token.trim();
+        if trimmed.is_empty() {
+            return String::new();
+        }
+        let lower = trimmed.to_lowercase();
+        match lower.as_str() {
+            "ctrl" | "control" => "Ctrl".to_string(),
+            "alt" => "Alt".to_string(),
+            "shift" => "Shift".to_string(),
+            "cmd" | "command" | "meta" | "super" => "Meta".to_string(),
+            "cmdorctrl" | "commandorcontrol" | "controlorcommand" => "CmdOrControl".to_string(),
+            "`" | "backquote" | "grave" | "graveaccent" => "Backquote".to_string(),
+            "esc" => "Escape".to_string(),
+            "spacebar" => "Space".to_string(),
+            "return" => "Enter".to_string(),
+            "left" => "ArrowLeft".to_string(),
+            "right" => "ArrowRight".to_string(),
+            "up" => "ArrowUp".to_string(),
+            "down" => "ArrowDown".to_string(),
+            _ => {
+                if trimmed.len() == 1 {
+                    let ch = trimmed.chars().next().unwrap_or_default();
+                    if ch.is_ascii_alphabetic() {
+                        return ch.to_ascii_uppercase().to_string();
+                    }
+                }
+                trimmed.to_string()
+            }
+        }
     }
-    if trimmed == "\u{0060}" {
-        return "Backquote".to_string();
+
+    fn normalize_shortcut(value: &str) -> Option<String> {
+        let mut modifiers = Vec::<String>::new();
+        let mut key = String::new();
+        for raw in value.split('+') {
+            let token = normalize_token(raw);
+            if token.is_empty() {
+                continue;
+            }
+            match token.as_str() {
+                "Ctrl" | "Alt" | "Shift" | "Meta" | "CmdOrControl" => {
+                    if !modifiers.contains(&token) {
+                        modifiers.push(token);
+                    }
+                }
+                _ => key = token,
+            }
+        }
+        if key.is_empty() {
+            return None;
+        }
+        modifiers.push(key);
+        Some(modifiers.join("+"))
     }
-    trimmed.to_string()
+
+    normalize_shortcut(&value)
+        .or_else(|| normalize_shortcut(fallback))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn normalize_ui_lang(value: &str) -> Option<&'static str> {
+    let lower = value.trim().to_lowercase();
+    if lower.starts_with("zh") {
+        Some("zh")
+    } else if lower.starts_with("en") {
+        Some("en")
+    } else {
+        None
+    }
+}
+
+fn default_dock_color() -> String {
+    "amber".to_string()
+}
+
+fn normalize_dock_color(value: &str) -> &'static str {
+    match value.trim().to_lowercase().as_str() {
+        "amber" => "amber",
+        "blue" => "blue",
+        "green" => "green",
+        "rose" => "rose",
+        "slate" => "slate",
+        _ => "amber",
+    }
 }
 
 fn detect_ui_lang_zh() -> bool {
@@ -544,7 +628,7 @@ fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
         return Ok(());
     }
 
-    let ui_lang_zh = app.state::<AppState>().ui_lang_zh;
+    let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
     let window = WebviewWindowBuilder::new(
         app,
         CONTROL_LABEL,
@@ -680,8 +764,16 @@ fn sidebar_script() -> String {
   window.__diviewer_legacy_inject_v1__ = true;
 
   const ensureBridge = () => {{
-    const invoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-    if (!invoke) return;
+    const globalInvoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+    const internalInvoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+    const invokeRaw = typeof globalInvoke === "function" ? globalInvoke : internalInvoke;
+    if (typeof invokeRaw !== "function") {{
+      try {{
+        console.warn("[DI-Viewer bridge] tauri invoke is unavailable");
+      }} catch (_e) {{}}
+      return;
+    }}
+    const invoke = (cmd, args) => invokeRaw(cmd, args);
     const bridge = window.bridge || {{}};
 
     const warnBridge = (action, err) => {{
@@ -692,6 +784,14 @@ fn sidebar_script() -> String {
 
     bridge.navigate = (url) => invoke("navigate", {{ url: String(url || "") }}).catch((err) => {{
       warnBridge("navigate", err);
+    }});
+    bridge.get_state = () => invoke("get_state").catch((err) => {{
+      warnBridge("get_state", err);
+      return null;
+    }});
+    bridge.toggle_show_hide = () => invoke("toggle_show_hide").catch((err) => {{
+      warnBridge("toggle_show_hide", err);
+      return false;
     }});
     bridge.toggle_on_top = () => invoke("toggle_on_top").catch((err) => {{
       warnBridge("toggle_on_top", err);
@@ -708,9 +808,17 @@ fn sidebar_script() -> String {
     bridge.minimize = () => invoke("minimize_browser").catch((err) => {{
       warnBridge("minimize_browser", err);
     }});
+    bridge.maximize_restore = () => invoke("maximize_restore_browser").catch((err) => {{
+      warnBridge("maximize_restore_browser", err);
+      return false;
+    }});
     bridge.close_window = () => invoke("close_app").catch((err) => {{
       warnBridge("close_app", err);
     }});
+    bridge.video_action = (action) =>
+      invoke("video_action", {{ action: String(action || "") }}).catch((err) => {{
+        warnBridge("video_action", err);
+      }});
     bridge.save_config = (configJson) => {{
       let config = {{}};
       try {{
@@ -848,6 +956,26 @@ fn sidebar_script() -> String {
       invoke("close_tab", {{ index: Number(index ?? -1) }}).catch((err) => {{
         warnBridge("close_tab", err);
       }});
+    bridge.get_ui_language = () => invoke("get_ui_language")
+      .catch((err) => {{
+        warnBridge("get_ui_language", err);
+        return "zh";
+      }});
+    bridge.set_ui_language = (lang) =>
+      invoke("set_ui_language", {{ lang: String(lang || "zh") }}).catch((err) => {{
+        warnBridge("set_ui_language", err);
+        return "zh";
+      }});
+    bridge.get_dock_color = () => invoke("get_dock_color")
+      .catch((err) => {{
+        warnBridge("get_dock_color", err);
+        return "amber";
+      }});
+    bridge.set_dock_color = (color) =>
+      invoke("set_dock_color", {{ color: String(color || "amber") }}).catch((err) => {{
+        warnBridge("set_dock_color", err);
+        return "amber";
+      }});
 
     window.bridge = bridge;
     if (typeof window.qt === "undefined") {{
@@ -958,6 +1086,7 @@ fn sidebar_script() -> String {
       btn.addEventListener("click", (e) => {{
         e.preventDefault();
         e.stopPropagation();
+        const tabIndex = Number(btn.getAttribute("data-tab") ?? String(i));
         const isOpen = panel.classList.contains("active");
         const wasActive = btn.classList.contains("active");
         dockBtns.forEach((b) => b.classList.remove("active"));
@@ -969,7 +1098,7 @@ fn sidebar_script() -> String {
         dock.classList.add("expanded");
         panel.classList.add("active");
         overlay && overlay.classList.add("active");
-        switchTab(i);
+        switchTab(tabIndex);
       }});
     }});
   }};
@@ -1506,7 +1635,7 @@ fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig) -> AppResult<()> {
 }
 
 fn setup_tray(app: &AppHandle) -> AppResult<()> {
-    let ui_lang_zh = app.state::<AppState>().ui_lang_zh;
+    let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
     let panel_item =
         MenuItem::with_id(
             app,
@@ -1611,7 +1740,7 @@ fn create_browser_tab_window(
     let app_for_load = app.clone();
     let label_for_popup = label.to_string();
     let label_for_load = label.to_string();
-    let ui_lang_zh = app.state::<AppState>().ui_lang_zh;
+    let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
 
     let browser = WebviewWindowBuilder::new(app, label.to_string(), WebviewUrl::External(url))
         .title(ui_text(ui_lang_zh, "DI-Viewer Browser", "DI-Viewer Browser"))
@@ -1742,6 +1871,22 @@ fn create_browser_window(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+fn current_ui_lang(state: &AppState) -> String {
+    if state.ui_lang_zh.load(Ordering::SeqCst) {
+        "zh".to_string()
+    } else {
+        "en".to_string()
+    }
+}
+
+fn current_dock_color(state: &AppState) -> String {
+    state
+        .data
+        .lock()
+        .map(|locked| normalize_dock_color(&locked.persist.dock_color).to_string())
+        .unwrap_or_else(|_| "amber".to_string())
+}
+
 #[tauri::command]
 fn get_state(app: AppHandle, state: tauri::State<AppState>) -> AppResult<FrontendState> {
     let mut snapshot = {
@@ -1769,6 +1914,7 @@ fn get_state(app: AppHandle, state: tauri::State<AppState>) -> AppResult<Fronten
         maximized: snapshot.0.window_maximized,
         position_locked: snapshot.0.window_position_locked,
         sidebar_visible: state.sidebar_visible.load(Ordering::SeqCst),
+        ui_lang: current_ui_lang(&state),
         bookmarks: snapshot.0.bookmarks,
         hotkeys: snapshot.1,
     })
@@ -1784,6 +1930,42 @@ fn get_hotkeys(state: tauri::State<AppState>) -> AppResult<HotkeyConfig> {
         locked.hotkeys.clone()
     };
     Ok(hotkeys)
+}
+
+#[tauri::command]
+fn get_ui_language(state: tauri::State<AppState>) -> AppResult<String> {
+    Ok(current_ui_lang(&state))
+}
+
+#[tauri::command]
+fn set_ui_language(app: AppHandle, state: tauri::State<AppState>, lang: String) -> AppResult<String> {
+    let normalized = normalize_ui_lang(&lang).unwrap_or("zh");
+    state.ui_lang_zh.store(normalized == "zh", Ordering::SeqCst);
+    update_persist(&state, |persist| {
+        persist.ui_language = normalized.to_string();
+    })?;
+    if let Some(window) = app.get_webview_window(CONTROL_LABEL) {
+        let _ = window.set_title(ui_text(
+            normalized == "zh",
+            "DI-Viewer \u{63A7}\u{5236}\u{53F0}",
+            "DI-Viewer Control",
+        ));
+    }
+    Ok(normalized.to_string())
+}
+
+#[tauri::command]
+fn get_dock_color(state: tauri::State<AppState>) -> AppResult<String> {
+    Ok(current_dock_color(&state))
+}
+
+#[tauri::command]
+fn set_dock_color(state: tauri::State<AppState>, color: String) -> AppResult<String> {
+    let normalized = normalize_dock_color(&color).to_string();
+    update_persist(&state, |persist| {
+        persist.dock_color = normalized.clone();
+    })?;
+    Ok(normalized)
 }
 
 #[tauri::command]
@@ -2130,18 +2312,28 @@ pub fn run() {
             persist.window_opacity = persist.window_opacity.clamp(0.2, 1.0);
             persist.window_visible = true;
             persist.bookmarks = sanitize_bookmarks(persist.bookmarks);
+            let ui_lang_zh = match normalize_ui_lang(&persist.ui_language) {
+                Some("zh") => true,
+                Some("en") => false,
+                _ => detect_ui_lang_zh(),
+            };
+            persist.ui_language = if ui_lang_zh {
+                "zh".to_string()
+            } else {
+                "en".to_string()
+            };
+            persist.dock_color = normalize_dock_color(&persist.dock_color).to_string();
             let (initial_tabs, initial_active_tab) = build_tabs_from_persist(&mut persist);
             let next_tab_id_seed = initial_tabs.len().max(1) as u64;
 
             let hotkeys = read_json::<HotkeyConfig>(&hotkeys_path)
                 .unwrap_or_default()
                 .sanitize();
-            let ui_lang_zh = detect_ui_lang_zh();
 
             app.manage(AppState {
                 history_path,
                 hotkeys_path,
-                ui_lang_zh,
+                ui_lang_zh: AtomicBool::new(ui_lang_zh),
                 data: Mutex::new(RuntimeState {
                     tabs: initial_tabs,
                     active_tab: initial_active_tab,
@@ -2177,6 +2369,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             get_hotkeys,
+            get_ui_language,
+            set_ui_language,
+            get_dock_color,
+            set_dock_color,
             navigate,
             go_home,
             toggle_show_hide,

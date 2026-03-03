@@ -1,8 +1,15 @@
 {
   "identifier": "default",
-  "description": "Default capability for DI-Viewer control panel.",
+  "description": "Default capability for DI-Viewer control panel and browser webviews.",
+  "remote": {
+    "urls": [
+      "https://*/*",
+      "http://*/*"
+    ]
+  },
   "windows": [
-    "main"
+    "main",
+    "browser*"
   ],
   "permissions": [
     "core:default"
