@@ -19,7 +19,6 @@ jobs:
           - name: windows-x64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            tauri_args: --bundles nsis,msi --target x86_64-pc-windows-msvc
             nsis_glob: tauri-di-viewer/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             msi_glob: tauri-di-viewer/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           - name: macos-arm64
@@ -67,7 +66,14 @@ jobs:
         run: |
           dism /online /Enable-Feature /FeatureName:VBSCRIPT /All /NoRestart
 
+      - name: Build desktop bundle (Windows)
+        if: runner.os == 'Windows'
+        working-directory: tauri-di-viewer
+        shell: cmd
+        run: npm run tauri build -- --verbose --bundles nsis,msi --target x86_64-pc-windows-msvc
+
       - name: Build desktop bundle
+        if: runner.os != 'Windows'
         working-directory: tauri-di-viewer
         run: npm run tauri build -- --verbose ${{ matrix.tauri_args }}
 
