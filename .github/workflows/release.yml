@@ -60,12 +60,6 @@ jobs:
             Add-Content -Path $env:GITHUB_PATH -Value $wixPath
           }
 
-      - name: Enable VBSCRIPT (required for MSI on some runners)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          dism /online /Enable-Feature /FeatureName:VBSCRIPT /All /NoRestart
-
       - name: Build desktop bundle (Windows)
         if: runner.os == 'Windows'
         working-directory: tauri-di-viewer
