@@ -19,8 +19,8 @@ jobs:
           - name: windows-x64
             os: windows-latest
             rust_target: x86_64-pc-windows-msvc
-            tauri_args: --bundles zip --target x86_64-pc-windows-msvc
-            bundle_glob: tauri-di-viewer/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/zip/*.zip
+            tauri_args: --no-bundle --target x86_64-pc-windows-msvc
+            binary_path: tauri-di-viewer/src-tauri/target/x86_64-pc-windows-msvc/release/tauri-di-viewer.exe
           - name: macos-arm64
             os: macos-14
             rust_target: aarch64-apple-darwin
@@ -50,7 +50,21 @@ jobs:
         working-directory: tauri-di-viewer
         run: npm run tauri build -- ${{ matrix.tauri_args }}
 
-      - name: Stage release assets
+      - name: Stage Windows zip asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
+          $exePath = "${{ matrix.binary_path }}"
+          if (-not (Test-Path $exePath)) {
+            throw "Windows executable not found: $exePath"
+          }
+          $zipPath = "release-assets/DI-Viewer-${{ github.ref_name }}-windows-x64.zip"
+          Compress-Archive -Path $exePath -DestinationPath $zipPath -Force
+
+      - name: Stage macOS dmg asset
+        if: runner.os == 'macOS'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
