@@ -47,9 +47,29 @@ jobs:
         working-directory: tauri-di-viewer
         run: npm ci
 
+      - name: Install Windows packaging dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis wixtoolset -y
+          $nsisPath = "${env:ProgramFiles(x86)}\NSIS"
+          if (Test-Path $nsisPath) {
+            Add-Content -Path $env:GITHUB_PATH -Value $nsisPath
+          }
+          $wixPath = "${env:ProgramFiles(x86)}\WiX Toolset v3.11\bin"
+          if (Test-Path $wixPath) {
+            Add-Content -Path $env:GITHUB_PATH -Value $wixPath
+          }
+
+      - name: Enable VBSCRIPT (required for MSI on some runners)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dism /online /Enable-Feature /FeatureName:VBSCRIPT /All /NoRestart
+
       - name: Build desktop bundle
         working-directory: tauri-di-viewer
-        run: npm run tauri build -- ${{ matrix.tauri_args }}
+        run: npm run tauri build -- --verbose ${{ matrix.tauri_args }}
 
       - name: Stage Windows assets
         if: runner.os == 'Windows'
