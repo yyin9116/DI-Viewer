@@ -1,4 +1,4 @@
-name: Build And Release (Multi Platform)
+name: Desktop Release
 
 on:
   push:
@@ -9,21 +9,23 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            bundle: nsis
-            platform_name: Windows
-          - os: ubuntu-22.04
-            bundle: appimage
-            platform_name: Linux
-          - os: macos-latest
-            bundle: dmg
-            platform_name: macOS
-    runs-on: ${{ matrix.os }}
+          - name: windows-x64
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            tauri_args: --bundles zip --target x86_64-pc-windows-msvc
+            bundle_glob: tauri-di-viewer/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/zip/*.zip
+          - name: macos-arm64
+            os: macos-14
+            rust_target: aarch64-apple-darwin
+            tauri_args: --bundles dmg --target aarch64-apple-darwin
+            bundle_glob: tauri-di-viewer/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,35 +39,87 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install NSIS (Windows)
-        if: runner.os == 'Windows'
-        run: choco install nsis -y
-
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Install frontend dependencies
         working-directory: tauri-di-viewer
         run: npm ci
 
-      - name: Build and publish release artifacts
-        uses: tauri-apps/tauri-action@v0
+      - name: Build desktop bundle
+        working-directory: tauri-di-viewer
+        run: npm run tauri build -- ${{ matrix.tauri_args }}
+
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
+          $files = Get-ChildItem -Path "${{ matrix.bundle_glob }}" -File
+          if (-not $files) {
+            throw "No bundle files found by: ${{ matrix.bundle_glob }}"
+          }
+          foreach ($file in $files) {
+            Copy-Item -Path $file.FullName -Destination "release-assets"
+          }
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.name }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bundle-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum * > SHA256SUMS
+
+      - name: Resolve release notes
+        id: release_notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          notes_file="docs/releases/${tag}.md"
+          if [[ -f "${notes_file}" ]]; then
+            notes="$(cat "${notes_file}")"
+          else
+            notes=$'Automated desktop release.\n\nIncluded artifacts:\n- Windows x64 (zip)\n- macOS arm64 (dmg)\n- SHA256SUMS'
+          fi
+
+          delim="$(uuidgen)"
+          {
+            echo "body<<${delim}"
+            echo "${notes}"
+            echo "${delim}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: DI-Viewer ${{ github.ref_name }}
+          body: ${{ steps.release_notes.outputs.body }}
+          files: |
+            release-assets/*
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          projectPath: tauri-di-viewer
-          args: --bundles ${{ matrix.bundle }}
-          tagName: ${{ github.ref_name }}
-          releaseName: DI-Viewer ${{ github.ref_name }}
-          releaseBody: |
-            Automated release for DI-Viewer.
-            Included platforms:
-            - Windows (NSIS installer)
-            - Linux (AppImage)
-            - macOS (dmg)
-          releaseDraft: false
-          prerelease: false
