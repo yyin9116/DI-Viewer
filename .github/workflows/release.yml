@@ -70,12 +70,12 @@ jobs:
         if: runner.os == 'Windows'
         working-directory: tauri-di-viewer
         shell: cmd
-        run: npm run tauri build -- --verbose --bundles nsis,msi --target x86_64-pc-windows-msvc
+        run: npm run tauri build -- --bundles nsis,msi --target x86_64-pc-windows-msvc
 
       - name: Build desktop bundle
         if: runner.os != 'Windows'
         working-directory: tauri-di-viewer
-        run: npm run tauri build -- --verbose ${{ matrix.tauri_args }}
+        run: npm run tauri build -- ${{ matrix.tauri_args }}
 
       - name: Stage Windows assets
         if: runner.os == 'Windows'
