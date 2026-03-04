@@ -24,8 +24,8 @@ jobs:
           - name: macos-arm64
             os: macos-14
             rust_target: aarch64-apple-darwin
-            tauri_args: --bundles dmg --target aarch64-apple-darwin
-            dmg_glob: tauri-di-viewer/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            tauri_args: --bundles app --target aarch64-apple-darwin
+            app_glob: tauri-di-viewer/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -96,12 +96,21 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           New-Item -ItemType Directory -Force -Path "release-assets" | Out-Null
-          $files = Get-ChildItem -Path "${{ matrix.dmg_glob }}" -File
-          if (-not $files) {
-            throw "No bundle files found by: ${{ matrix.dmg_glob }}"
+
+          $app = Get-ChildItem -Path "${{ matrix.app_glob }}" -Directory | Select-Object -First 1
+          if (-not $app) {
+            throw "No app bundle found by: ${{ matrix.app_glob }}"
           }
-          $dmg = $files | Select-Object -First 1
-          Copy-Item -Path $dmg.FullName -Destination "release-assets/DI-Viewer-${{ github.ref_name }}-macos-arm64.dmg"
+
+          # Ad-hoc sign only (no Developer ID / no notarization) to reduce Gatekeeper false "damaged" cases.
+          & codesign --force --deep --sign - "$($app.FullName)"
+          & codesign --verify --deep --strict --verbose=2 "$($app.FullName)"
+
+          $outDmg = "release-assets/DI-Viewer-${{ github.ref_name }}-macos-arm64.dmg"
+          if (Test-Path $outDmg) {
+            Remove-Item $outDmg -Force
+          }
+          & hdiutil create -volname "DI-Viewer" -srcfolder "$($app.FullName)" -ov -format UDZO "$outDmg"
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
@@ -125,13 +134,6 @@ jobs:
           merge-multiple: true
           path: release-assets
 
-      - name: Generate SHA256SUMS
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd release-assets
-          sha256sum * > SHA256SUMS
-
       - name: Resolve release notes
         id: release_notes
         shell: bash
@@ -142,7 +144,7 @@ jobs:
           if [[ -f "${notes_file}" ]]; then
             notes="$(cat "${notes_file}")"
           else
-            notes=$'Automated desktop release.\n\nIncluded artifacts:\n- Windows x64 (exe installer)\n- Windows x64 (msi installer)\n- macOS arm64 (dmg)\n- SHA256SUMS'
+            notes=$'Automated desktop release.\n\nIncluded artifacts:\n- Windows x64 (exe installer)\n- Windows x64 (msi installer)\n- macOS arm64 (dmg)'
           fi
 
           delim="$(uuidgen)"
