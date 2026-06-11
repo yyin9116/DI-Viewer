@@ -1,12 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capability for DI-Viewer control panel and browser webviews.",
-  "remote": {
-    "urls": [
-      "https://*/*",
-      "http://*/*"
-    ]
-  },
+  "description": "Default capability for trusted DI-Viewer local webviews only.",
   "windows": [
     "main",
     "browser*"

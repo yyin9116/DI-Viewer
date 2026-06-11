@@ -10,6 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "withGlobalTauri": false,
     "security": {
       "csp": null,
       "capabilities": [
@@ -19,6 +20,9 @@
   },
   "bundle": {
     "active": true,
+    "resources": [
+      "resources/lucid-start-page"
+    ],
     "targets": [
       "nsis"
     ],

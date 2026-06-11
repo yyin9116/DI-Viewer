@@ -35,6 +35,28 @@ if (args.length === 0) {
   process.exit(1);
 }
 
+function runChecked(command, commandArgs, options) {
+  const result = spawn(command, commandArgs, {
+    ...options,
+    stdio: "inherit",
+    shell: false
+  });
+  return new Promise((resolve, reject) => {
+    result.on("error", reject);
+    result.on("exit", (code, signal) => {
+      if (signal) {
+        reject(new Error(`${command} terminated by ${signal}`));
+        return;
+      }
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} exited with code ${code ?? 1}`));
+    });
+  });
+}
+
 const command = process.platform === "win32" ? "npx.cmd" : "npx";
 const commandArgs = ["tauri", ...args];
 
@@ -50,6 +72,16 @@ function shellEscape(value) {
 }
 
 const fullCommand = [command, ...commandArgs.map(shellEscape)].join(" ");
+
+try {
+  await runChecked(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "prepare:tauri"], {
+    cwd: process.cwd(),
+    env
+  });
+} catch (error) {
+  console.error(`[DI-Viewer] prepare:tauri failed: ${error.message}`);
+  process.exit(1);
+}
 
 const child = spawn(fullCommand, [], {
   cwd: process.cwd(),

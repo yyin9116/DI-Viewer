@@ -4,33 +4,39 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
     fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl, WebviewWindow,
-    WebviewWindowBuilder,
-    WindowEvent,
+    WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_opener::OpenerExt;
 use url::Url;
 
 const BROWSER_LABEL: &str = "browser";
 const CONTROL_LABEL: &str = "main";
-const HOME_URL: &str = "https://limestart.cn/";
+const LEGACY_HOME_URL: &str = "https://limestart.cn/";
+const LEGACY_HOME_URL_ALT: &str = "https://limestart.cn";
+const LEGACY_HOME_URL_WWW: &str = "https://www.limestart.cn/";
+const LEGACY_HOME_URL_WWW_ALT: &str = "https://www.limestart.cn";
+const LOCAL_HOME_RESOURCE: &str = "lucid-start-page/index.html";
 const MAX_TAB_SESSIONS: usize = 20;
 const SNAP_DISTANCE: i32 = 10;
 const SNAP_DEBOUNCE_MS: u64 = 180;
-const LEGACY_INJECT_HTML_BYTES: &[u8] = include_bytes!("../../../shared/inject.html");
-const LEGACY_INJECT_CSS_BYTES: &[u8] = include_bytes!("../../../shared/inject.css");
-const LEGACY_INJECT_JS_BYTES: &[u8] = include_bytes!("../../../shared/inject.js");
+const SHARED_DIST_CSS_PATH: &str = "assets/app.css";
+const SHARED_DIST_JS_PATH: &str = "assets/app.js";
+const DESKTOP_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
+#[allow(dead_code)]
 const PAGE_NAV_PATCH_JS: &str = r##"
 (() => {
   if (window.__diviewer_nav_patched_v2__) return;
@@ -106,6 +112,7 @@ type AppResult<T> = Result<T, String>;
 #[serde(rename_all = "camelCase")]
 struct HotkeyConfig {
     toggle_play_pause: String,
+    toggle_recording: String,
     toggle_show_hide: String,
     inside_mode: String,
     video_backward: String,
@@ -120,6 +127,7 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             toggle_play_pause: "Backquote".to_string(),
+            toggle_recording: "R".to_string(),
             toggle_show_hide: "0".to_string(),
             inside_mode: "P".to_string(),
             video_backward: "5".to_string(),
@@ -137,6 +145,7 @@ impl HotkeyConfig {
         let default = Self::default();
         Self {
             toggle_play_pause: normalize_hotkey(self.toggle_play_pause, &default.toggle_play_pause),
+            toggle_recording: normalize_hotkey(self.toggle_recording, &default.toggle_recording),
             toggle_show_hide: normalize_hotkey(self.toggle_show_hide, &default.toggle_show_hide),
             inside_mode: normalize_hotkey(self.inside_mode, &default.inside_mode),
             video_backward: normalize_hotkey(self.video_backward, &default.video_backward),
@@ -188,7 +197,7 @@ struct PersistedState {
 impl Default for PersistedState {
     fn default() -> Self {
         Self {
-            last_url: HOME_URL.to_string(),
+            last_url: LEGACY_HOME_URL.to_string(),
             window_start_x: 560.0,
             window_start_y: 240.0,
             window_width: 980.0,
@@ -200,7 +209,7 @@ impl Default for PersistedState {
             window_maximized: false,
             window_position_locked: false,
             bookmarks: Vec::new(),
-            tab_urls: vec![HOME_URL.to_string()],
+            tab_urls: vec![LEGACY_HOME_URL.to_string()],
             active_tab_index: 0,
             ui_language: String::new(),
             dock_color: default_dock_color(),
@@ -247,6 +256,15 @@ struct TabSessionSnapshot {
     active_index: i32,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogEntry {
+    ts: u128,
+    source: String,
+    action: String,
+    detail: String,
+}
+
 #[derive(Debug)]
 struct RuntimeState {
     persist: PersistedState,
@@ -258,18 +276,21 @@ struct RuntimeState {
 struct AppState {
     history_path: PathBuf,
     hotkeys_path: PathBuf,
+    runtime_log_path: PathBuf,
+    home_url: String,
     ui_lang_zh: AtomicBool,
     data: Mutex<RuntimeState>,
-    next_tab_id: AtomicU64,
     closing_windows: Mutex<HashSet<String>>,
     snapping: AtomicBool,
     move_seq: AtomicU64,
     sidebar_visible: AtomicBool,
+    log_store: Mutex<Vec<LogEntry>>,
 }
 
 #[derive(Clone, Copy)]
 enum HotkeyAction {
     TogglePlayPause,
+    ToggleRecording,
     ToggleShowHide,
     ToggleInsideMode,
     VideoBackward,
@@ -364,17 +385,19 @@ fn normalize_ui_lang(value: &str) -> Option<&'static str> {
 }
 
 fn default_dock_color() -> String {
-    "amber".to_string()
+    "white".to_string()
 }
 
 fn normalize_dock_color(value: &str) -> &'static str {
     match value.trim().to_lowercase().as_str() {
+        "white" => "white",
+        "ivory" => "ivory",
         "amber" => "amber",
         "blue" => "blue",
         "green" => "green",
         "rose" => "rose",
         "slate" => "slate",
-        _ => "amber",
+        _ => "white",
     }
 }
 
@@ -404,23 +427,106 @@ fn detect_ui_lang_zh() -> bool {
 }
 
 fn ui_text<'a>(zh: bool, zh_text: &'a str, en_text: &'a str) -> &'a str {
-    if zh { zh_text } else { en_text }
+    if zh {
+        zh_text
+    } else {
+        en_text
+    }
 }
 
-fn normalize_url(url: &str) -> String {
+fn is_legacy_home_url(url: &str) -> bool {
     let trimmed = url.trim();
-    if trimmed.is_empty() {
-        return HOME_URL.to_string();
+    if matches!(
+        trimmed,
+        LEGACY_HOME_URL | LEGACY_HOME_URL_ALT | LEGACY_HOME_URL_WWW | LEGACY_HOME_URL_WWW_ALT
+    ) {
+        return true;
     }
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+
+    if let Ok(parsed) = Url::parse(trimmed) {
+        if let Some(host) = parsed.host_str() {
+            let normalized_host = host.trim().to_ascii_lowercase();
+            return normalized_host == "limestart.cn" || normalized_host == "www.limestart.cn";
+        }
+    }
+
+    false
+}
+
+fn normalize_url_with_home(url: &str, home_url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.is_empty() || trimmed == "about:blank" || is_legacy_home_url(trimmed) {
+        return home_url.to_string();
+    }
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with("file://")
+    {
         trimmed.to_string()
     } else {
         format!("https://{trimmed}")
     }
 }
 
-fn normalize_bookmark(url: &str, title: &str) -> AppResult<BookmarkItem> {
-    let normalized_url = normalize_url(url);
+fn resolve_home_url(app: &AppHandle) -> String {
+    if let Ok(dev_home) = std::env::var("DI_VIEWER_HOME_URL") {
+        let trimmed = dev_home.trim();
+        if !trimmed.is_empty() && Url::parse(trimmed).is_ok() {
+            return trimmed.to_string();
+        }
+    }
+
+    let mut candidates = Vec::new();
+
+    // Prefer workspace/local page first so design tweaks are reflected immediately in dev.
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join("lucid-start-page").join("index.html"));
+        candidates.push(
+            current_dir
+                .join("..")
+                .join("lucid-start-page")
+                .join("index.html"),
+        );
+        candidates.push(
+            current_dir
+                .join("..")
+                .join("..")
+                .join("lucid-start-page")
+                .join("index.html"),
+        );
+    }
+
+    candidates.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("lucid-start-page")
+            .join("index.html"),
+    );
+
+    // Fallback to packaged resources.
+    if let Ok(path) = app.path().resource_dir() {
+        candidates.push(path.join(LOCAL_HOME_RESOURCE));
+        candidates.push(path.join("resources").join(LOCAL_HOME_RESOURCE));
+        candidates.push(path.join("index.html"));
+    }
+
+    for candidate in candidates {
+        if !candidate.exists() {
+            continue;
+        }
+        if let Ok(absolute) = candidate.canonicalize() {
+            if let Ok(url) = Url::from_file_path(&absolute) {
+                return url.to_string();
+            }
+        }
+    }
+
+    LEGACY_HOME_URL.to_string()
+}
+
+fn normalize_bookmark(url: &str, title: &str, home_url: &str) -> AppResult<BookmarkItem> {
+    let normalized_url = normalize_url_with_home(url, home_url);
     parse_url(&normalized_url)?;
     let normalized_title = {
         let trimmed = title.trim();
@@ -436,11 +542,11 @@ fn normalize_bookmark(url: &str, title: &str) -> AppResult<BookmarkItem> {
     })
 }
 
-fn sanitize_bookmarks(items: Vec<BookmarkItem>) -> Vec<BookmarkItem> {
+fn sanitize_bookmarks(items: Vec<BookmarkItem>, home_url: &str) -> Vec<BookmarkItem> {
     let mut result = Vec::new();
     let mut seen = HashSet::new();
     for item in items {
-        if let Ok(normalized) = normalize_bookmark(&item.url, &item.title) {
+        if let Ok(normalized) = normalize_bookmark(&item.url, &item.title, home_url) {
             if seen.insert(normalized.url.clone()) {
                 result.push(normalized);
             }
@@ -449,11 +555,11 @@ fn sanitize_bookmarks(items: Vec<BookmarkItem>) -> Vec<BookmarkItem> {
     result
 }
 
-fn sanitize_tab_urls(items: Vec<String>) -> Vec<String> {
+fn sanitize_tab_urls(items: Vec<String>, home_url: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut seen = HashSet::new();
     for item in items {
-        let normalized = normalize_url(&item);
+        let normalized = normalize_url_with_home(&item, home_url);
         if parse_url(&normalized).is_ok() && seen.insert(normalized.clone()) {
             result.push(normalized);
             if result.len() >= MAX_TAB_SESSIONS {
@@ -464,16 +570,19 @@ fn sanitize_tab_urls(items: Vec<String>) -> Vec<String> {
     result
 }
 
-fn build_tabs_from_persist(persist: &mut PersistedState) -> (Vec<BrowserTab>, usize) {
-    let mut urls = sanitize_tab_urls(std::mem::take(&mut persist.tab_urls));
+fn build_tabs_from_persist(
+    persist: &mut PersistedState,
+    home_url: &str,
+) -> (Vec<BrowserTab>, usize) {
+    let mut urls = sanitize_tab_urls(std::mem::take(&mut persist.tab_urls), home_url);
     if urls.is_empty() {
-        let fallback = normalize_url(&persist.last_url);
+        let fallback = normalize_url_with_home(&persist.last_url, home_url);
         if parse_url(&fallback).is_ok() {
             urls.push(fallback);
         }
     }
     if urls.is_empty() {
-        urls.push(HOME_URL.to_string());
+        urls.push(home_url.to_string());
     }
 
     let active = persist.active_tab_index.min(urls.len() - 1);
@@ -483,13 +592,8 @@ fn build_tabs_from_persist(persist: &mut PersistedState) -> (Vec<BrowserTab>, us
 
     let tabs = urls
         .into_iter()
-        .enumerate()
-        .map(|(idx, url)| BrowserTab {
-            label: if idx == 0 {
-                BROWSER_LABEL.to_string()
-            } else {
-                format!("browser-tab-{idx}")
-            },
+        .map(|url| BrowserTab {
+            label: BROWSER_LABEL.to_string(),
             title: tab_title_from_url(&url),
             url,
         })
@@ -502,6 +606,9 @@ fn parse_url(input: &str) -> AppResult<Url> {
 }
 
 fn tab_title_from_url(url: &str) -> String {
+    if url.contains("/lucid-start-page/index.html") || is_legacy_home_url(url) {
+        return "Lucid Start Page".to_string();
+    }
     if let Ok(parsed) = Url::parse(url) {
         if let Some(host) = parsed.host_str() {
             return host.to_string();
@@ -509,15 +616,10 @@ fn tab_title_from_url(url: &str) -> String {
     }
     let trimmed = url.trim();
     if trimmed.is_empty() {
-        HOME_URL.to_string()
+        LEGACY_HOME_URL.to_string()
     } else {
         trimmed.to_string()
     }
-}
-
-fn next_tab_label(state: &AppState) -> String {
-    let next = state.next_tab_id.fetch_add(1, Ordering::SeqCst);
-    format!("browser-tab-{next}")
 }
 
 fn tabs_snapshot_locked(locked: &RuntimeState) -> TabSessionSnapshot {
@@ -579,19 +681,28 @@ fn set_active_tab_url(state: &AppState, url: String) -> AppResult<()> {
 
 fn sync_tab_from_browser_label(app: &AppHandle, label: &str) -> AppResult<()> {
     let browser = browser_window_by_label(app, label)?;
+    let state = app.state::<AppState>();
+    let home_url = state.home_url.clone();
     let current_url = browser
         .url()
-        .map(|u| normalize_url(u.as_str()))
-        .unwrap_or_else(|_| HOME_URL.to_string());
-    let state = app.state::<AppState>();
+        .map(|u| normalize_url_with_home(u.as_str(), &home_url))
+        .unwrap_or_else(|_| home_url.clone());
     let mut locked = state
         .data
         .lock()
         .map_err(|_| "State lock poisoned".to_string())?;
-    if let Some(tab) = locked.tabs.iter_mut().find(|tab| tab.label == label) {
+
+    if label == BROWSER_LABEL {
+        if !locked.tabs.is_empty() {
+            let idx = locked.active_tab.min(locked.tabs.len() - 1);
+            locked.tabs[idx].url = current_url.clone();
+            locked.tabs[idx].title = tab_title_from_url(&current_url);
+        }
+    } else if let Some(tab) = locked.tabs.iter_mut().find(|tab| tab.label == label) {
         tab.url = current_url.clone();
         tab.title = tab_title_from_url(&current_url);
     }
+
     Ok(())
 }
 
@@ -614,8 +725,7 @@ fn active_browser_label(app: &AppHandle) -> AppResult<String> {
 }
 
 fn browser_window(app: &AppHandle) -> AppResult<WebviewWindow> {
-    let label = active_browser_label(app)?;
-    browser_window_by_label(app, &label)
+    browser_window_by_label(app, BROWSER_LABEL)
 }
 
 fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
@@ -629,20 +739,20 @@ fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
     }
 
     let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
-    let window = WebviewWindowBuilder::new(
-        app,
-        CONTROL_LABEL,
-        WebviewUrl::App("index.html".into()),
-    )
-    .title(ui_text(
-        ui_lang_zh,
-        "DI-Viewer \u{63A7}\u{5236}\u{53F0}",
-        "DI-Viewer Control",
-    ))
-    .inner_size(760.0, 940.0)
-    .resizable(true)
-    .build()
-    .map_err(|err| format!("Create control window failed: {err}"))?;
+    let window =
+        WebviewWindowBuilder::new(app, CONTROL_LABEL, WebviewUrl::App("index.html".into()))
+            .title(ui_text(
+                ui_lang_zh,
+                "DI-Viewer \u{63A7}\u{5236}\u{53F0}",
+                "DI-Viewer Control",
+            ))
+            .inner_size(760.0, 940.0)
+            .resizable(true)
+            .build()
+            .map_err(|err| format!("Create control window failed: {err}"))?;
+    window
+        .show()
+        .map_err(|err| format!("Show control window failed: {err}"))?;
     let _ = window.set_focus();
     Ok(())
 }
@@ -665,7 +775,7 @@ fn save_history(state: &AppState) -> AppResult<()> {
             .map_err(|_| "State lock poisoned".to_string())?;
         let mut persist = locked.persist.clone();
         if locked.tabs.is_empty() {
-            let fallback = normalize_url(&persist.last_url);
+            let fallback = normalize_url_with_home(&persist.last_url, &state.home_url);
             persist.last_url = fallback.clone();
             persist.tab_urls = vec![fallback];
             persist.active_tab_index = 0;
@@ -710,6 +820,9 @@ fn js_for_action(action: &str) -> Option<&'static str> {
         "toggle_play_pause" => Some(
             "(() => { const v = document.querySelector('video'); if (!v) return; if (v.paused) { v.play(); } else { v.pause(); } })();",
         ),
+        "toggle_recording" => Some(
+            "(() => { const candidates = ['button[aria-label*=\"??\"]','button[title*=\"??\"]','button[aria-label*=\"record\" i]','button[title*=\"record\" i]','[data-action*=\"record\" i]']; for (const sel of candidates) { const node = document.querySelector(sel); if (node && typeof node.click === 'function') { node.click(); return; } } const ev = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', bubbles: true }); document.dispatchEvent(ev); })();",
+        ),
         "video_backward" => Some(
             "(() => { const v = document.querySelector('video'); if (v) { v.currentTime = Math.max(0, v.currentTime - 5); } })();",
         ),
@@ -724,8 +837,7 @@ fn js_for_action(action: &str) -> Option<&'static str> {
 }
 
 fn execute_video_action(app: &AppHandle, action: &str) -> AppResult<()> {
-    let js = js_for_action(action)
-        .ok_or_else(|| format!("Unsupported video action: {action}"))?;
+    let js = js_for_action(action).ok_or_else(|| format!("Unsupported video action: {action}"))?;
     let browser = browser_window(app)?;
     browser
         .eval(js)
@@ -753,407 +865,264 @@ fn escape_js_template_literal(input: &str) -> String {
         .replace("${", "\\${")
 }
 
-fn sidebar_script() -> String {
-    let html = escape_js_template_literal(&String::from_utf8_lossy(LEGACY_INJECT_HTML_BYTES));
-    let css = escape_js_template_literal(&String::from_utf8_lossy(LEGACY_INJECT_CSS_BYTES));
-    let inject_js = String::from_utf8_lossy(LEGACY_INJECT_JS_BYTES);
-    format!(
-        r##"
-(() => {{
-  if (window.__diviewer_legacy_inject_v1__) return;
-  window.__diviewer_legacy_inject_v1__ = true;
-
-  const ensureBridge = () => {{
-    const globalInvoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
-    const internalInvoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
-    const invokeRaw = typeof globalInvoke === "function" ? globalInvoke : internalInvoke;
-    if (typeof invokeRaw !== "function") {{
-      try {{
-        console.warn("[DI-Viewer bridge] tauri invoke is unavailable");
-      }} catch (_e) {{}}
-      return;
-    }}
-    const invoke = (cmd, args) => invokeRaw(cmd, args);
-    const bridge = window.bridge || {{}};
-
-    const warnBridge = (action, err) => {{
-      try {{
-        console.warn("[DI-Viewer bridge] " + action + " failed", err);
-      }} catch (_e) {{}}
-    }};
-
-    bridge.navigate = (url) => invoke("navigate", {{ url: String(url || "") }}).catch((err) => {{
-      warnBridge("navigate", err);
-    }});
-    bridge.get_state = () => invoke("get_state").catch((err) => {{
-      warnBridge("get_state", err);
-      return null;
-    }});
-    bridge.toggle_show_hide = () => invoke("toggle_show_hide").catch((err) => {{
-      warnBridge("toggle_show_hide", err);
-      return false;
-    }});
-    bridge.toggle_on_top = () => invoke("toggle_on_top").catch((err) => {{
-      warnBridge("toggle_on_top", err);
-    }});
-    bridge.toggle_inside_mode = () => invoke("toggle_inside_mode").catch((err) => {{
-      warnBridge("toggle_inside_mode", err);
-    }});
-    bridge.increase_opacity = () => invoke("increase_opacity").catch((err) => {{
-      warnBridge("increase_opacity", err);
-    }});
-    bridge.decrease_opacity = () => invoke("decrease_opacity").catch((err) => {{
-      warnBridge("decrease_opacity", err);
-    }});
-    bridge.minimize = () => invoke("minimize_browser").catch((err) => {{
-      warnBridge("minimize_browser", err);
-    }});
-    bridge.maximize_restore = () => invoke("maximize_restore_browser").catch((err) => {{
-      warnBridge("maximize_restore_browser", err);
-      return false;
-    }});
-    bridge.close_window = () => invoke("close_app").catch((err) => {{
-      warnBridge("close_app", err);
-    }});
-    bridge.video_action = (action) =>
-      invoke("video_action", {{ action: String(action || "") }}).catch((err) => {{
-        warnBridge("video_action", err);
-      }});
-    bridge.save_config = (configJson) => {{
-      let config = {{}};
-      try {{
-        config = JSON.parse(String(configJson || "{{}}"));
-      }} catch (_e) {{
-        config = {{}};
-      }}
-      return invoke("save_hotkeys", {{ config }}).catch((err) => {{
-        warnBridge("save_hotkeys", err);
-      }});
-    }};
-    bridge.get_config = (callback) => invoke("get_hotkeys")
-      .then((cfg) => {{
-        if (typeof callback === "function") {{
-          try {{
-            callback(JSON.stringify(cfg));
-          }} catch (err) {{
-            warnBridge("get_hotkeys.callback", err);
-          }}
-        }}
-        return cfg;
-      }})
-      .catch((err) => {{
-        warnBridge("get_hotkeys", err);
-        if (typeof callback === "function") {{
-          try {{
-            callback("{{}}");
-          }} catch (cbErr) {{
-            warnBridge("get_hotkeys.callback_fallback", cbErr);
-          }}
-        }}
-        return {{}};
-      }});
-    bridge.reset_config = (callback) => invoke("reset_hotkeys")
-      .then((cfg) => {{
-        if (typeof callback === "function") {{
-          try {{
-            callback(JSON.stringify(cfg));
-          }} catch (err) {{
-            warnBridge("reset_hotkeys.callback", err);
-          }}
-        }}
-        return cfg;
-      }})
-      .catch((err) => {{
-        warnBridge("reset_hotkeys", err);
-        if (typeof callback === "function") {{
-          try {{
-            callback("{{}}");
-          }} catch (cbErr) {{
-            warnBridge("reset_hotkeys.callback_fallback", cbErr);
-          }}
-        }}
-        return {{}};
-      }});
-    bridge.toggle_lock_position = (callback) => invoke("toggle_lock_position")
-      .then((locked) => {{
-        if (typeof callback === "function") {{
-          try {{
-            callback(Boolean(locked));
-          }} catch (err) {{
-            warnBridge("toggle_lock_position.callback", err);
-          }}
-        }}
-        return Boolean(locked);
-      }})
-      .catch((err) => {{
-        warnBridge("toggle_lock_position", err);
-        return false;
-      }});
-    bridge.resize_to_ratio = (ratio) =>
-      invoke("resize_to_ratio", {{ ratio: Number(ratio || 0.5) }}).catch((err) => {{
-        warnBridge("resize_to_ratio", err);
-      }});
-    bridge.get_bookmarks = (callback) => invoke("get_bookmarks")
-      .then((items) => {{
-        if (typeof callback === "function") {{
-          try {{
-            callback(JSON.stringify(items || []));
-          }} catch (err) {{
-            warnBridge("get_bookmarks.callback", err);
-          }}
-        }}
-        return items || [];
-      }})
-      .catch((err) => {{
-        warnBridge("get_bookmarks", err);
-        if (typeof callback === "function") {{
-          try {{
-            callback("[]");
-          }} catch (cbErr) {{
-            warnBridge("get_bookmarks.callback_fallback", cbErr);
-          }}
-        }}
-        return [];
-      }});
-    bridge.get_tabs = (callback) => invoke("list_tabs")
-      .then((snapshot) => {{
-        if (typeof callback === "function") {{
-          try {{
-            callback(JSON.stringify(snapshot || {{ tabs: [], activeIndex: 0 }}));
-          }} catch (err) {{
-            warnBridge("list_tabs.callback", err);
-          }}
-        }}
-        return snapshot || {{ tabs: [], activeIndex: 0 }};
-      }})
-      .catch((err) => {{
-        warnBridge("list_tabs", err);
-        if (typeof callback === "function") {{
-          try {{
-            callback(JSON.stringify({{ tabs: [], activeIndex: 0 }}));
-          }} catch (cbErr) {{
-            warnBridge("list_tabs.callback_fallback", cbErr);
-          }}
-        }}
-        return {{ tabs: [], activeIndex: 0 }};
-      }});
-    bridge.switch_tab = (index) => invoke("switch_tab", {{ index: Number(index ?? 0) }}).catch((err) => {{
-      warnBridge("switch_tab", err);
-    }});
-    bridge.add_bookmark = (url, title) =>
-      invoke("add_bookmark", {{ url: String(url || ""), title: String(title || "") }}).catch((err) => {{
-        warnBridge("add_bookmark", err);
-      }});
-    bridge.remove_bookmark = (url) =>
-      invoke("remove_bookmark", {{ url: String(url || "") }}).catch((err) => {{
-        warnBridge("remove_bookmark", err);
-      }});
-    bridge.new_tab = (url) =>
-      invoke("new_tab", {{ url: String(url || "https://limestart.cn/") }}).catch((err) => {{
-        warnBridge("new_tab", err);
-      }});
-    bridge.close_tab = (index) =>
-      invoke("close_tab", {{ index: Number(index ?? -1) }}).catch((err) => {{
-        warnBridge("close_tab", err);
-      }});
-    bridge.get_ui_language = () => invoke("get_ui_language")
-      .catch((err) => {{
-        warnBridge("get_ui_language", err);
-        return "zh";
-      }});
-    bridge.set_ui_language = (lang) =>
-      invoke("set_ui_language", {{ lang: String(lang || "zh") }}).catch((err) => {{
-        warnBridge("set_ui_language", err);
-        return "zh";
-      }});
-    bridge.get_dock_color = () => invoke("get_dock_color")
-      .catch((err) => {{
-        warnBridge("get_dock_color", err);
-        return "amber";
-      }});
-    bridge.set_dock_color = (color) =>
-      invoke("set_dock_color", {{ color: String(color || "amber") }}).catch((err) => {{
-        warnBridge("set_dock_color", err);
-        return "amber";
-      }});
-
-    window.bridge = bridge;
-    if (typeof window.qt === "undefined") {{
-      window.qt = {{ webChannelTransport: {{}} }};
-    }}
-    if (typeof window.QWebChannel === "undefined") {{
-      window.QWebChannel = function(_transport, callback) {{
-        if (typeof callback === "function") {{
-          callback({{ objects: {{ bridge: window.bridge }} }});
-        }}
-      }};
-    }}
-  }};
-
-  const ROOT_ID = "__diviewer_legacy_inject_root__";
-  const STYLE_ID = "__diviewer_legacy_inject_style__";
-  const HARDEN_STYLE_ID = "__diviewer_legacy_harden_style__";
-  ensureBridge();
-
-  if (!document.getElementById(STYLE_ID)) {{
-    const style = document.createElement("style");
-    style.id = STYLE_ID;
-    style.textContent = `{css}`;
-    (document.head || document.documentElement).appendChild(style);
-  }}
-
-  if (!document.getElementById(HARDEN_STYLE_ID)) {{
-    const style = document.createElement("style");
-    style.id = HARDEN_STYLE_ID;
-    style.textContent = `
-      #__diviewer_legacy_inject_root__ {{
-        position: fixed;
-        inset: 0;
-        z-index: 2147483640;
-        pointer-events: none;
-      }}
-      #__diviewer_legacy_inject_root__ #diviewer-dock,
-      #__diviewer_legacy_inject_root__ #diviewer-panel,
-      #__diviewer_legacy_inject_root__ #diviewer-overlay {{
-        pointer-events: auto !important;
-      }}
-      #__diviewer_legacy_inject_root__ #diviewer-overlay {{
-        z-index: 2147483645 !important;
-      }}
-      #__diviewer_legacy_inject_root__ #diviewer-dock,
-      #__diviewer_legacy_inject_root__ #diviewer-panel {{
-        z-index: 2147483646 !important;
-      }}
-      #__diviewer_legacy_inject_root__ #diviewer-dock .dock-btn,
-      #__diviewer_legacy_inject_root__ #diviewer-dock .dock-btn * {{
-        pointer-events: auto !important;
-      }}
-    `;
-    (document.head || document.documentElement).appendChild(style);
-  }}
-
-  if (!document.getElementById(ROOT_ID)) {{
-    const host = document.createElement("div");
-    host.id = ROOT_ID;
-    host.innerHTML = `{html}`;
-    (document.body || document.documentElement).appendChild(host);
-  }}
-
-  const bindDockFallback = () => {{
-    if (window.__diviewer_inject_ready__) return;
-    if (window.__diviewer_fallback_bound__) return;
-    window.__diviewer_fallback_bound__ = true;
-
-    const dock = document.getElementById("diviewer-dock");
-    const panel = document.getElementById("diviewer-panel");
-    const overlay = document.getElementById("diviewer-overlay");
-    if (!dock || !panel) return;
-
-    const tabs = Array.from(panel.querySelectorAll(".diviewer-tab-box .tab-btn"));
-    const allContent = Array.from(panel.querySelectorAll(".diviewer-content-box .content"));
-    const dockBtns = Array.from(dock.querySelectorAll(".dock-btn"));
-    const line = panel.querySelector(".diviewer-line");
-    const tabBox = panel.querySelector(".diviewer-tab-box");
-
-    const switchTab = (index) => {{
-      if (tabs.length === 0 || allContent.length === 0) return;
-      const idx = Math.max(0, Math.min(index, Math.min(tabs.length, allContent.length) - 1));
-      tabs.forEach((t) => t.classList.remove("active"));
-      allContent.forEach((c) => c.classList.remove("active"));
-      tabs[idx].classList.add("active");
-      allContent[idx].classList.add("active");
-      if (line && tabBox) {{
-        const w = tabBox.getBoundingClientRect().width || 0;
-        line.style.left = (idx * w / tabs.length) + "px";
-      }}
-    }};
-
-    const closePanel = () => {{
-      panel.classList.remove("active");
-      overlay && overlay.classList.remove("active");
-      dock.classList.remove("expanded");
-      dockBtns.forEach((b) => b.classList.remove("active"));
-    }};
-
-    if (overlay && !overlay.dataset.fallbackBound) {{
-      overlay.dataset.fallbackBound = "1";
-      overlay.addEventListener("click", closePanel);
-    }}
-
-    dockBtns.forEach((btn, i) => {{
-      if (btn.dataset.fallbackBound) return;
-      btn.dataset.fallbackBound = "1";
-      btn.addEventListener("click", (e) => {{
-        e.preventDefault();
-        e.stopPropagation();
-        const tabIndex = Number(btn.getAttribute("data-tab") ?? String(i));
-        const isOpen = panel.classList.contains("active");
-        const wasActive = btn.classList.contains("active");
-        dockBtns.forEach((b) => b.classList.remove("active"));
-        if (isOpen && wasActive) {{
-          closePanel();
-          return;
-        }}
-        btn.classList.add("active");
-        dock.classList.add("expanded");
-        panel.classList.add("active");
-        overlay && overlay.classList.add("active");
-        switchTab(tabIndex);
-      }});
-    }});
-  }};
-
-  try {{
-    {inject_js}
-  }} catch (_e) {{}}
-  bindDockFallback();
-}})();
-"##
-    )
+fn shared_dist_candidates(app: &AppHandle, relative_path: &str) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("shared").join("dist").join(relative_path));
+        candidates.push(resource_dir.join("dist").join(relative_path));
+    }
+    candidates.push(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("shared")
+            .join("dist")
+            .join(relative_path),
+    );
+    candidates
 }
 
-fn sidebar_visibility_script(visible: bool) -> String {
+fn read_shared_dist_asset(app: &AppHandle, relative_path: &str) -> AppResult<String> {
+    let candidates = shared_dist_candidates(app, relative_path);
+    for path in &candidates {
+        if path.exists() {
+            return fs::read_to_string(path).map_err(|err| {
+                format!("Read shared UI asset failed at {}: {err}", path.display())
+            });
+        }
+    }
+    let searched = candidates
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "Required shared UI asset `{relative_path}` not found. Searched: {searched}"
+    ))
+}
+
+fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
+    let css = escape_js_template_literal(&read_shared_dist_asset(app, SHARED_DIST_CSS_PATH)?);
+    let js = read_shared_dist_asset(app, SHARED_DIST_JS_PATH)?;
+
+    let template = r##"
+(() => {
+  const isTrustedStartPage = () => {
+    const href = String(window.location.href || '').toLowerCase();
+    return href.includes('/lucid-start-page/index.html');
+  };
+
+  const resolveInvoke = () => {
+    const globalInvoke = window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke;
+    const internalInvoke = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke;
+    return typeof globalInvoke === 'function' ? globalInvoke : internalInvoke;
+  };
+
+  const allowedCommands = new Set([
+    'get_state',
+    'list_tabs',
+    'get_logs',
+    'get_dock_color',
+    'navigate',
+    'go_home',
+    'go_back',
+    'go_forward',
+    'refresh_page',
+    'toggle_show_hide',
+    'toggle_on_top',
+    'toggle_inside_mode',
+    'set_inside_mode',
+    'toggle_lock_position',
+    'toggle_sidebar',
+    'set_opacity',
+    'set_shell_opacity',
+    'increase_opacity',
+    'decrease_opacity',
+    'minimize_browser',
+    'maximize_restore_browser',
+    'close_app',
+    'new_tab',
+    'close_tab',
+    'switch_tab',
+    'get_bookmarks',
+    'add_bookmark',
+    'remove_bookmark',
+    'save_hotkeys',
+    'get_hotkeys',
+    'reset_hotkeys',
+    'video_action',
+    'get_ui_language',
+    'set_ui_language',
+    'set_dock_color',
+    'resize_to_ratio',
+    'open_control_panel'
+  ]);
+
+  const call = (cmd, args, fallback) => {
+    if (!isTrustedStartPage() && !allowedCommands.has(cmd)) {
+      return Promise.resolve(fallback);
+    }
+    const invokeRaw = resolveInvoke();
+    if (typeof invokeRaw !== 'function') {
+      return Promise.resolve(fallback);
+    }
+    return invokeRaw(cmd, args).catch(() => fallback);
+  };
+
+  const existingBridge = {};
+
+  window.__diviewer_bridge = {
+    ...existingBridge,
+    get_state: () => call('get_state', undefined, {}),
+    get_tabs: () => call('list_tabs', undefined, { tabs: [], activeIndex: 0 }),
+    get_logs: () => call('get_logs', undefined, []),
+    get_dock_color: () => call('get_dock_color', undefined, 'white'),
+    navigate: (url) => call('navigate', { url: String(url || '') }, ''),
+    go_home: () => call('go_home', undefined, ''),
+    go_back: () => call('go_back', undefined, ''),
+    go_forward: () => call('go_forward', undefined, ''),
+    refresh_page: () => call('refresh_page', undefined, ''),
+    toggle_show_hide: () => call('toggle_show_hide', undefined, false),
+    toggle_on_top: () => call('toggle_on_top', undefined, false),
+    toggle_inside_mode: () => call('toggle_inside_mode', undefined, false),
+    set_inside_mode: (inside) => call('set_inside_mode', { inside: Boolean(inside) }, false),
+    toggle_lock_position: () => call('toggle_lock_position', undefined, false),
+    toggle_sidebar: () => call('toggle_sidebar', undefined, false),
+    set_opacity: (opacity) => call('set_opacity', { opacity: Number(opacity || 1) }, 1),
+    set_shell_opacity: (opacity) => call('set_shell_opacity', { opacity: Number(opacity || 1) }, 1),
+    increase_opacity: () => call('increase_opacity', undefined, 1),
+    decrease_opacity: () => call('decrease_opacity', undefined, 1),
+    minimize: () => call('minimize_browser', undefined, null),
+    maximize_restore: () => call('maximize_restore_browser', undefined, false),
+    close_window: () => call('close_app', undefined, null),
+    new_tab: (url) => call('new_tab', { url: String(url || '') }, ''),
+    close_tab: (index) => call('close_tab', { index: Number(index ?? -1) }, false),
+    switch_tab: (index) => call('switch_tab', { index: Number(index ?? 0) }, ''),
+    get_bookmarks: () => call('get_bookmarks', undefined, []),
+    add_bookmark: (url, title) => call('add_bookmark', { url: String(url || ''), title: String(title || '') }, []),
+    remove_bookmark: (url) => call('remove_bookmark', { url: String(url || '') }, []),
+    save_config: (configJson) => {
+      let config = {};
+      try { config = JSON.parse(String(configJson || '{}')); } catch (_e) {}
+      return call('save_hotkeys', { config }, null);
+    },
+    get_config: () => call('get_hotkeys', undefined, {}),
+    reset_config: () => call('reset_hotkeys', undefined, {}),
+    video_action: (action) => call('video_action', { action: String(action || '') }, null),
+    get_ui_language: () => call('get_ui_language', undefined, 'zh'),
+    set_ui_language: (lang) => call('set_ui_language', { lang: String(lang || 'zh') }, 'zh'),
+    set_dock_color: (color) => call('set_dock_color', { color: String(color || 'white') }, 'white'),
+    resize_to_ratio: (ratio) => call('resize_to_ratio', { ratio: Number(ratio || 0.5) }, 0.5),
+    open_control_panel: () => call('open_control_panel', undefined, null),
+    close_app: () => call('close_app', undefined, null)
+  };
+
+  try {
+    Object.defineProperty(window, "__diviewer_bridge", { value: window.__diviewer_bridge, writable: false, configurable: false });
+  } catch (_e) {}
+
+
+  let root = document.getElementById('__diviewer_shared_root__');
+  if (!root) {
+    root = document.createElement('div');
+    root.id = '__diviewer_shared_root__';
+    (document.documentElement || document.body).appendChild(root);
+  }
+  root.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;overflow:visible;pointer-events:none;background:transparent;z-index:2147483646;display:block;';
+  if (!root.hasAttribute('data-sidebar-visible')) {
+    root.setAttribute('data-sidebar-visible', 'true');
+  }
+
+  const shadow = root.shadowRoot || root.attachShadow({ mode: 'open' });
+  if (!shadow.getElementById('__diviewer_shared_mount__')) {
+    const mount = document.createElement('div');
+    mount.id = '__diviewer_shared_mount__';
+    mount.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;background:transparent;';
+    shadow.appendChild(mount);
+  }
+
+  if (!shadow.getElementById('__diviewer_shared_css__')) {
+    const style = document.createElement('style');
+    style.id = '__diviewer_shared_css__';
+    style.textContent = `__DIVIEWER_CSS__`;
+    shadow.appendChild(style);
+  }
+
+  const ensureShellInsetStyle = () => {
+    if (isTrustedStartPage()) return;
+    const styleId = '__diviewer_shell_inset__';
+    if (document.getElementById(styleId)) return;
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = `:root[data-diviewer-shell="open"] body {
+  padding: 128px 18px 24px 104px !important;
+}
+@media (max-width: 680px) {
+  :root[data-diviewer-shell="open"] body {
+    padding: 116px 12px 16px 88px !important;
+  }
+}`;
+    (document.head || document.documentElement).appendChild(style);
+  };
+
+  const syncShellInset = () => {
+    if (isTrustedStartPage()) return;
+    const host = document.getElementById('__diviewer_shared_root__');
+    const shadowOpen = host && host.shadowRoot ? host.shadowRoot.querySelector('.diviewer-host-root')?.getAttribute('data-sidebar-visible') : null;
+    const hostOpen = host ? host.getAttribute('data-sidebar-visible') : null;
+    const open = (shadowOpen ?? hostOpen ?? 'true') !== 'false';
+    document.documentElement.setAttribute('data-diviewer-shell', open ? 'open' : 'closed');
+  };
+
+  if (!window.__DIVIEWER_SHELL_INSET__) {
+    window.__DIVIEWER_SHELL_INSET__ = true;
+    ensureShellInsetStyle();
+    syncShellInset();
+    window.addEventListener('diviewer:sync', syncShellInset);
+  }
+
+  if (!window.__DIVIEWER_SHARED_BOOTSTRAPPED__) {
+    window.__DIVIEWER_SHARED_BOOTSTRAPPED__ = true;
+    __DIVIEWER_JS__
+  }
+
+  window.dispatchEvent(new CustomEvent('diviewer:sync'));
+})();
+"##;
+
+    Ok(template
+        .replace("__DIVIEWER_CSS__", &css)
+        .replace("__DIVIEWER_JS__", &js))
+}
+
+fn shared_shell_visibility_script(visible: bool) -> String {
     let visible_js = if visible { "true" } else { "false" };
     format!(
         r##"
 (() => {{
-  const root = document.getElementById("__diviewer_legacy_inject_root__");
-  const panel = document.getElementById("diviewer-panel");
-  const overlay = document.getElementById("diviewer-overlay");
-  const dock = document.getElementById("diviewer-dock");
-  const show = {visible_js};
-
+  const host = document.getElementById('__diviewer_shared_root__');
+  const root = host && host.shadowRoot ? host.shadowRoot.querySelector('.diviewer-host-root') : null;
   if (root) {{
-    root.style.display = show ? "block" : "none";
+    // Keep overlay mounted so collapsed handle is always reachable.
+    root.style.display = 'block';
+    root.setAttribute('data-sidebar-visible', {visible_js} ? 'true' : 'false');
   }}
-  if (dock) {{
-    dock.style.display = show ? "" : "none";
-  }}
-  if (panel && !show) {{
-    panel.classList.remove("active");
-  }}
-  if (overlay && !show) {{
-    overlay.classList.remove("active");
-  }}
+  window.dispatchEvent(new CustomEvent('diviewer:sync'));
 }})();
-"##
+"##,
     )
 }
 
-fn refresh_browser_injected_scripts_for_label(app: &AppHandle, label: &str) {
-    if let Ok(browser) = browser_window_by_label(app, label) {
-        let _ = browser.eval(PAGE_NAV_PATCH_JS);
-        let _ = browser.eval(sidebar_script());
-        let visible = app
-            .state::<AppState>()
-            .sidebar_visible
-            .load(Ordering::SeqCst);
-        let _ = browser.eval(sidebar_visibility_script(visible));
-    }
-}
+#[allow(dead_code)]
+#[allow(dead_code)]
+fn refresh_browser_injected_scripts_for_label(_app: &AppHandle, _label: &str) {}
 
 #[cfg(target_os = "windows")]
-fn apply_window_effects(window: &WebviewWindow, opacity: f64, click_through: bool) -> AppResult<()> {
+fn apply_window_effects(
+    window: &WebviewWindow,
+    opacity: f64,
+    click_through: bool,
+) -> AppResult<()> {
     let handle = window
         .window_handle()
         .map_err(|err| format!("Window handle error: {err}"))?;
@@ -1180,7 +1149,11 @@ fn apply_window_effects(window: &WebviewWindow, opacity: f64, click_through: boo
 }
 
 #[cfg(not(target_os = "windows"))]
-fn apply_window_effects(_window: &WebviewWindow, _opacity: f64, _click_through: bool) -> AppResult<()> {
+fn apply_window_effects(
+    _window: &WebviewWindow,
+    _opacity: f64,
+    _click_through: bool,
+) -> AppResult<()> {
     Ok(())
 }
 
@@ -1206,7 +1179,6 @@ fn snap_browser_to_edge_for_label(app: &AppHandle, label: &str) -> AppResult<()>
     let size = browser
         .outer_size()
         .map_err(|err| format!("Read size failed: {err}"))?;
-
     let monitor_pos = monitor.position();
     let monitor_size = monitor.size();
     let monitor_left = monitor_pos.x;
@@ -1248,17 +1220,16 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
     let position = browser
         .outer_position()
         .map_err(|err| format!("Read position failed: {err}"))?;
-    let size = browser
-        .outer_size()
-        .map_err(|err| format!("Read size failed: {err}"))?;
+    let inner = browser
+        .inner_size()
+        .map_err(|err| format!("Read inner size failed: {err}"))?;
     let visible = browser.is_visible().unwrap_or(true);
     let maximized = browser.is_maximized().unwrap_or(false);
+    let state = app.state::<AppState>();
     let current_url = browser
         .url()
         .map(|u| u.to_string())
-        .unwrap_or_else(|_| HOME_URL.to_string());
-
-    let state = app.state::<AppState>();
+        .unwrap_or_else(|_| state.home_url.clone());
     update_persist(&state, |persist| {
         persist.last_url = if current_url.trim().is_empty() {
             persist.last_url.clone()
@@ -1269,8 +1240,10 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
             persist.window_start_x = position.x as f64;
             persist.window_start_y = position.y as f64;
         }
-        persist.window_width = size.width as f64;
-        persist.window_height = size.height as f64;
+        // Persist inner size because create uses .inner_size(...).
+        // Using outer size here causes cumulative growth each tab/window cycle.
+        persist.window_width = inner.width as f64;
+        persist.window_height = inner.height as f64;
         persist.window_visible = visible;
         persist.window_maximized = maximized;
     })?;
@@ -1329,8 +1302,8 @@ fn set_inside_mode_impl(app: &AppHandle, inside: bool) -> AppResult<bool> {
 }
 
 fn toggle_inside_mode_impl(app: &AppHandle) -> AppResult<bool> {
-    let state = app.state::<AppState>();
     let next = {
+        let state = app.state::<AppState>();
         let locked = state
             .data
             .lock()
@@ -1338,6 +1311,10 @@ fn toggle_inside_mode_impl(app: &AppHandle) -> AppResult<bool> {
         !locked.persist.window_inside
     };
     set_inside_mode_impl(app, next)
+}
+
+fn set_inside_mode_command(app: AppHandle, inside: bool) -> AppResult<bool> {
+    set_inside_mode_impl(&app, inside)
 }
 
 fn toggle_on_top_impl(app: &AppHandle) -> AppResult<bool> {
@@ -1375,6 +1352,25 @@ fn set_opacity_impl(app: &AppHandle, opacity: f64) -> AppResult<f64> {
         persist.window_opacity = next;
     })?;
     Ok(next)
+}
+
+fn set_shell_opacity_impl(app: &AppHandle, opacity: f64) -> AppResult<f64> {
+    let next = opacity.clamp(0.2, 1.0);
+    let state = app.state::<AppState>();
+    update_persist(&state, |persist| {
+        persist.window_opacity = next;
+    })?;
+
+    let script = format!("(() => {{ document.documentElement.style.opacity = '{}'; document.body.style.opacity = '{}'; }})();", next, next);
+    if let Ok(browser) = browser_window(app) {
+        let _ = browser.eval(script);
+    }
+    Ok(next)
+}
+
+#[tauri::command]
+fn set_shell_opacity(app: AppHandle, opacity: f64) -> AppResult<f64> {
+    set_shell_opacity_impl(&app, opacity)
 }
 
 fn adjust_opacity_impl(app: &AppHandle, delta: f64) -> AppResult<f64> {
@@ -1439,11 +1435,11 @@ fn resize_to_ratio_impl(app: &AppHandle, ratio: f64) -> AppResult<f64> {
         .set_position(Position::Physical(PhysicalPosition::new(x, y)))
         .map_err(|err| format!("Set position failed: {err}"))?;
 
+    let state = app.state::<AppState>();
     let current_url = browser
         .url()
         .map(|u| u.to_string())
-        .unwrap_or_else(|_| HOME_URL.to_string());
-    let state = app.state::<AppState>();
+        .unwrap_or_else(|_| state.home_url.clone());
     update_persist(&state, |persist| {
         persist.window_start_x = x as f64;
         persist.window_start_y = y as f64;
@@ -1466,7 +1462,7 @@ fn bookmarks_snapshot(state: &AppState) -> AppResult<Vec<BookmarkItem>> {
 }
 
 fn add_bookmark_impl(state: &AppState, url: String, title: String) -> AppResult<Vec<BookmarkItem>> {
-    let bookmark = normalize_bookmark(&url, &title)?;
+    let bookmark = normalize_bookmark(&url, &title, &state.home_url)?;
     update_persist(state, |persist| {
         persist.bookmarks.retain(|item| item.url != bookmark.url);
         persist.bookmarks.insert(0, bookmark.clone());
@@ -1478,7 +1474,7 @@ fn add_bookmark_impl(state: &AppState, url: String, title: String) -> AppResult<
 }
 
 fn remove_bookmark_impl(state: &AppState, url: String) -> AppResult<Vec<BookmarkItem>> {
-    let normalized_url = normalize_url(&url);
+    let normalized_url = normalize_url_with_home(&url, &state.home_url);
     update_persist(state, |persist| {
         persist.bookmarks.retain(|item| item.url != normalized_url);
     })?;
@@ -1532,6 +1528,7 @@ fn close_app_impl(app: &AppHandle) {
 fn run_hotkey_action(app: &AppHandle, action: HotkeyAction) -> AppResult<()> {
     match action {
         HotkeyAction::TogglePlayPause => execute_video_action(app, "toggle_play_pause"),
+        HotkeyAction::ToggleRecording => execute_video_action(app, "toggle_recording"),
         HotkeyAction::ToggleShowHide => {
             toggle_show_hide_impl(app)?;
             Ok(())
@@ -1567,6 +1564,11 @@ fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig) -> AppResult<()> {
             "togglePlayPause",
             config.toggle_play_pause.as_str(),
             HotkeyAction::TogglePlayPause,
+        ),
+        (
+            "toggleRecording",
+            config.toggle_recording.as_str(),
+            HotkeyAction::ToggleRecording,
         ),
         (
             "toggleShowHide",
@@ -1630,56 +1632,59 @@ fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig) -> AppResult<()> {
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(format!("Hotkey registration failed: {}", failures.join(" | ")))
+        Err(format!(
+            "Hotkey registration failed: {}",
+            failures.join(" | ")
+        ))
     }
 }
 
 fn setup_tray(app: &AppHandle) -> AppResult<()> {
     let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
-    let panel_item =
-        MenuItem::with_id(
-            app,
-            "tray_panel",
-            ui_text(ui_lang_zh, "\u{63A7}\u{5236}\u{9762}\u{677F}", "Control Panel"),
-            true,
-            None::<&str>,
-        )
-            .map_err(|err| format!("Create tray menu failed: {err}"))?;
-    let show_item =
-        MenuItem::with_id(
-            app,
-            "tray_show",
-            ui_text(
-                ui_lang_zh,
-                "\u{663E}\u{793A}\u{6D4F}\u{89C8}\u{5668}",
-                "Show Browser",
-            ),
-            true,
-            None::<&str>,
-        )
-            .map_err(|err| format!("Create tray menu failed: {err}"))?;
-    let hide_item =
-        MenuItem::with_id(
-            app,
-            "tray_hide",
-            ui_text(
-                ui_lang_zh,
-                "\u{9690}\u{85CF}\u{6D4F}\u{89C8}\u{5668}",
-                "Hide Browser",
-            ),
-            true,
-            None::<&str>,
-        )
-            .map_err(|err| format!("Create tray menu failed: {err}"))?;
-    let exit_item =
-        MenuItem::with_id(
-            app,
-            "tray_exit",
-            ui_text(ui_lang_zh, "\u{9000}\u{51FA}", "Exit"),
-            true,
-            None::<&str>,
-        )
-            .map_err(|err| format!("Create tray menu failed: {err}"))?;
+    let panel_item = MenuItem::with_id(
+        app,
+        "tray_panel",
+        ui_text(
+            ui_lang_zh,
+            "\u{63A7}\u{5236}\u{9762}\u{677F}",
+            "Control Panel",
+        ),
+        true,
+        None::<&str>,
+    )
+    .map_err(|err| format!("Create tray menu failed: {err}"))?;
+    let show_item = MenuItem::with_id(
+        app,
+        "tray_show",
+        ui_text(
+            ui_lang_zh,
+            "\u{663E}\u{793A}\u{6D4F}\u{89C8}\u{5668}",
+            "Show Browser",
+        ),
+        true,
+        None::<&str>,
+    )
+    .map_err(|err| format!("Create tray menu failed: {err}"))?;
+    let hide_item = MenuItem::with_id(
+        app,
+        "tray_hide",
+        ui_text(
+            ui_lang_zh,
+            "\u{9690}\u{85CF}\u{6D4F}\u{89C8}\u{5668}",
+            "Hide Browser",
+        ),
+        true,
+        None::<&str>,
+    )
+    .map_err(|err| format!("Create tray menu failed: {err}"))?;
+    let exit_item = MenuItem::with_id(
+        app,
+        "tray_exit",
+        ui_text(ui_lang_zh, "\u{9000}\u{51FA}", "Exit"),
+        true,
+        None::<&str>,
+    )
+    .map_err(|err| format!("Create tray menu failed: {err}"))?;
     let separator = PredefinedMenuItem::separator(app).map_err(|err| err.to_string())?;
     let menu = Menu::with_items(
         app,
@@ -1735,7 +1740,10 @@ fn create_browser_tab_window(
     initial_url: &str,
     visible: bool,
 ) -> AppResult<WebviewWindow> {
-    let url = parse_url(&normalize_url(initial_url))?;
+    let url = parse_url(&normalize_url_with_home(
+        initial_url,
+        &app.state::<AppState>().home_url,
+    ))?;
     let app_for_popup = app.clone();
     let app_for_load = app.clone();
     let label_for_popup = label.to_string();
@@ -1743,12 +1751,17 @@ fn create_browser_tab_window(
     let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
 
     let browser = WebviewWindowBuilder::new(app, label.to_string(), WebviewUrl::External(url))
-        .title(ui_text(ui_lang_zh, "DI-Viewer Browser", "DI-Viewer Browser"))
+        .title(ui_text(
+            ui_lang_zh,
+            "DI-Viewer Browser",
+            "DI-Viewer Browser",
+        ))
         .inner_size(initial.window_width, initial.window_height)
         .min_inner_size(600.0, 320.0)
         .position(initial.window_start_x, initial.window_start_y)
         .resizable(true)
         .always_on_top(initial.window_on_top)
+        .user_agent(DESKTOP_BROWSER_USER_AGENT)
         .visible(visible)
         .on_navigation(|_url| true)
         .on_new_window(move |new_url, _features| {
@@ -1757,8 +1770,32 @@ fn create_browser_tab_window(
             }
             tauri::webview::NewWindowResponse::Deny
         })
-        .on_page_load(move |_window, _payload| {
-            refresh_browser_injected_scripts_for_label(&app_for_load, &label_for_load);
+        .on_page_load(move |window, _payload| {
+            match shared_shell_script(&app_for_load) {
+                Ok(script) => {
+                    if let Err(err) = window.eval(script) {
+                        push_log(
+                            &app_for_load,
+                            "native",
+                            "inject_shared_shell",
+                            format!("failed:{err}"),
+                        );
+                    }
+                }
+                Err(err) => {
+                    push_log(
+                        &app_for_load,
+                        "native",
+                        "inject_shared_shell",
+                        format!("missing_assets:{err}"),
+                    );
+                }
+            }
+            let visible = app_for_load
+                .state::<AppState>()
+                .sidebar_visible
+                .load(Ordering::SeqCst);
+            let _ = window.eval(shared_shell_visibility_script(visible));
             let _ = sync_tab_from_browser_label(&app_for_load, &label_for_load);
         })
         .build()
@@ -1792,8 +1829,9 @@ fn create_browser_tab_window(
             if locked_position {
                 if position.x != target_x || position.y != target_y {
                     if let Some(browser) = app_handle.get_webview_window(&label_for_event) {
-                        let _ = browser
-                            .set_position(Position::Physical(PhysicalPosition::new(target_x, target_y)));
+                        let _ = browser.set_position(Position::Physical(PhysicalPosition::new(
+                            target_x, target_y,
+                        )));
                     }
                 }
                 return;
@@ -1839,7 +1877,7 @@ fn create_browser_tab_window(
 
 fn create_browser_window(app: &AppHandle) -> AppResult<()> {
     let state = app.state::<AppState>();
-    let (initial, tabs, active, visible) = {
+    let (initial, active_url, visible) = {
         let locked = state
             .data
             .lock()
@@ -1849,26 +1887,61 @@ fn create_browser_window(app: &AppHandle) -> AppResult<()> {
         } else {
             locked.active_tab.min(locked.tabs.len() - 1)
         };
+        let active_url = if locked.tabs.is_empty() {
+            locked.persist.last_url.clone()
+        } else {
+            locked.tabs[active].url.clone()
+        };
         (
             locked.persist.clone(),
-            locked.tabs.clone(),
-            active,
+            active_url,
             locked.persist.window_visible,
         )
     };
-    if tabs.is_empty() {
-        return Err("No browser tabs to create".to_string());
-    }
 
-    for (idx, tab) in tabs.iter().enumerate() {
-        let should_show = idx == active && visible;
-        let browser = create_browser_tab_window(app, &tab.label, &initial, &tab.url, should_show)?;
-        if should_show {
-            let _ = browser.show();
-            let _ = browser.set_focus();
-        }
+    let browser = create_browser_tab_window(app, BROWSER_LABEL, &initial, &active_url, visible)?;
+    if visible {
+        let _ = browser.show();
+        let _ = browser.set_focus();
     }
     Ok(())
+}
+
+fn push_log(app: &AppHandle, source: &str, action: &str, detail: impl Into<String>) {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let detail_text = detail.into();
+    let entry = LogEntry {
+        ts,
+        source: source.to_string(),
+        action: action.to_string(),
+        detail: detail_text.clone(),
+    };
+
+    let line = format!(
+        "[diviewer-log] {} {}:{}:{}",
+        ts, source, action, detail_text
+    );
+    eprintln!("{}", line);
+
+    let state = app.state::<AppState>();
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&state.runtime_log_path)
+    {
+        let _ = writeln!(file, "{}", line);
+    }
+
+    if let Ok(mut locked) = state.log_store.lock() {
+        locked.push(entry);
+        if locked.len() > 300 {
+            let excess = locked.len() - 300;
+            locked.drain(0..excess);
+        }
+    };
 }
 
 fn current_ui_lang(state: &AppState) -> String {
@@ -1884,7 +1957,7 @@ fn current_dock_color(state: &AppState) -> String {
         .data
         .lock()
         .map(|locked| normalize_dock_color(&locked.persist.dock_color).to_string())
-        .unwrap_or_else(|_| "amber".to_string())
+        .unwrap_or_else(|_| "white".to_string())
 }
 
 #[tauri::command]
@@ -1902,7 +1975,9 @@ fn get_state(app: AppHandle, state: tauri::State<AppState>) -> AppResult<Fronten
             snapshot.0.last_url = url.to_string();
         }
         snapshot.0.window_visible = browser.is_visible().unwrap_or(snapshot.0.window_visible);
-        snapshot.0.window_maximized = browser.is_maximized().unwrap_or(snapshot.0.window_maximized);
+        snapshot.0.window_maximized = browser
+            .is_maximized()
+            .unwrap_or(snapshot.0.window_maximized);
     }
 
     Ok(FrontendState {
@@ -1938,7 +2013,11 @@ fn get_ui_language(state: tauri::State<AppState>) -> AppResult<String> {
 }
 
 #[tauri::command]
-fn set_ui_language(app: AppHandle, state: tauri::State<AppState>, lang: String) -> AppResult<String> {
+fn set_ui_language(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    lang: String,
+) -> AppResult<String> {
     let normalized = normalize_ui_lang(&lang).unwrap_or("zh");
     state.ui_lang_zh.store(normalized == "zh", Ordering::SeqCst);
     update_persist(&state, |persist| {
@@ -1970,16 +2049,18 @@ fn set_dock_color(state: tauri::State<AppState>, color: String) -> AppResult<Str
 
 #[tauri::command]
 fn navigate(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppResult<String> {
-    let normalized = normalize_url(&url);
+    let normalized = normalize_url_with_home(&url, &state.home_url);
+    push_log(&app, "ui", "navigate", format!("start:{}", normalized));
     let browser = browser_window(&app)?;
     navigate_browser_to(&browser, &normalized)?;
     set_active_tab_url(&state, normalized.clone())?;
+    push_log(&app, "ui", "navigate", "ok");
     Ok(normalized)
 }
 
 #[tauri::command]
 fn go_home(app: AppHandle, state: tauri::State<AppState>) -> AppResult<String> {
-    navigate(app, state, HOME_URL.to_string())
+    navigate(app, state.clone(), state.home_url.clone())
 }
 
 #[tauri::command]
@@ -1990,6 +2071,11 @@ fn toggle_show_hide(app: AppHandle) -> AppResult<bool> {
 #[tauri::command]
 fn toggle_inside_mode(app: AppHandle) -> AppResult<bool> {
     toggle_inside_mode_impl(&app)
+}
+
+#[tauri::command]
+fn set_inside_mode(app: AppHandle, inside: bool) -> AppResult<bool> {
+    set_inside_mode_command(app, inside)
 }
 
 #[tauri::command]
@@ -2028,7 +2114,11 @@ fn get_bookmarks(state: tauri::State<AppState>) -> AppResult<Vec<BookmarkItem>> 
 }
 
 #[tauri::command]
-fn add_bookmark(state: tauri::State<AppState>, url: String, title: String) -> AppResult<Vec<BookmarkItem>> {
+fn add_bookmark(
+    state: tauri::State<AppState>,
+    url: String,
+    title: String,
+) -> AppResult<Vec<BookmarkItem>> {
     add_bookmark_impl(&state, url, title)
 }
 
@@ -2043,119 +2133,129 @@ fn list_tabs(state: tauri::State<AppState>) -> AppResult<TabSessionSnapshot> {
 }
 
 #[tauri::command]
+fn get_logs(state: tauri::State<AppState>) -> AppResult<Vec<LogEntry>> {
+    let logs = state
+        .log_store
+        .lock()
+        .map_err(|_| "State lock poisoned".to_string())?;
+    Ok(logs.clone())
+}
+
+#[tauri::command]
 fn switch_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppResult<String> {
-    let (from_label, target_label, target_url) = {
-        let mut locked = state
+    push_log(&app, "ui", "switch_tab", format!("start:{}", index));
+
+    let (target_url, idx) = {
+        let locked = state
             .data
             .lock()
             .map_err(|_| "State lock poisoned".to_string())?;
         if locked.tabs.is_empty() {
             return Err("No browser tabs".to_string());
         }
-        let from_idx = locked.active_tab.min(locked.tabs.len() - 1);
+        let current_idx = locked.active_tab.min(locked.tabs.len() - 1);
         let idx = if index < 0 {
-            from_idx
+            current_idx
         } else {
             (index as usize).min(locked.tabs.len() - 1)
         };
-        locked.active_tab = idx;
-        (
-            locked.tabs[from_idx].label.clone(),
-            locked.tabs[idx].label.clone(),
-            locked.tabs[idx].url.clone(),
-        )
+        (locked.tabs[idx].url.clone(), idx)
     };
 
-    if from_label != target_label {
-        if let Ok(current) = browser_window_by_label(&app, &from_label) {
-            let _ = persist_browser_state_for_label(&app, &from_label, false);
-            let _ = current.hide();
-        }
+    {
+        let mut locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        locked.active_tab = idx;
     }
 
-    let browser = browser_window_by_label(&app, &target_label)?;
-    browser
-        .show()
-        .map_err(|err| format!("Show window failed: {err}"))?;
-    let _ = browser.set_focus();
-    refresh_browser_injected_scripts_for_label(&app, &target_label);
+    let browser = browser_window(&app)?;
+    if !browser.is_visible().unwrap_or(true) {
+        browser
+            .show()
+            .map_err(|err| format!("Show window failed: {err}"))?;
+        let _ = browser.set_focus();
+    }
+    navigate_browser_to(&browser, &target_url)?;
 
     update_persist(&state, |persist| {
         persist.last_url = target_url.clone();
         persist.window_visible = true;
     })?;
+
+    push_log(&app, "ui", "switch_tab", "ok");
     Ok(target_url)
 }
 
 #[tauri::command]
 fn new_tab(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppResult<String> {
-    let target = normalize_url(if url.trim().is_empty() {
-        HOME_URL
-    } else {
-        url.as_str()
-    });
-    let (label, previous_active, initial) = {
+    push_log(&app, "ui", "new_tab", format!("start:{}", url));
+
+    let target = normalize_url_with_home(
+        if url.trim().is_empty() {
+            state.home_url.as_str()
+        } else {
+            url.as_str()
+        },
+        &state.home_url,
+    );
+
+    {
         let mut locked = state
             .data
             .lock()
             .map_err(|_| "State lock poisoned".to_string())?;
 
         if locked.tabs.len() >= MAX_TAB_SESSIONS {
+            push_log(&app, "ui", "new_tab", "max_tabs");
             return Err(format!("Maximum tab count reached: {MAX_TAB_SESSIONS}"));
         }
-        let previous = if locked.tabs.is_empty() {
-            None
-        } else {
-            let idx = locked.active_tab.min(locked.tabs.len() - 1);
-            Some(locked.tabs[idx].label.clone())
-        };
-        let label = next_tab_label(&state);
+
         locked.tabs.push(BrowserTab {
-            label: label.clone(),
+            label: BROWSER_LABEL.to_string(),
             title: tab_title_from_url(&target),
             url: target.clone(),
         });
-        locked.active_tab = locked.tabs.len() - 1;
-        (label, previous, locked.persist.clone())
-    };
-
-    let browser = create_browser_tab_window(&app, &label, &initial, &target, false)?;
-    if let Some(previous_label) = previous_active {
-        if previous_label != label {
-            if let Ok(previous) = browser_window_by_label(&app, &previous_label) {
-                let _ = persist_browser_state_for_label(&app, &previous_label, false);
-                let _ = previous.hide();
-            }
-        }
+        locked.active_tab = locked.tabs.len().saturating_sub(1);
     }
-    browser
-        .show()
-        .map_err(|err| format!("Show window failed: {err}"))?;
-    let _ = browser.set_focus();
-    refresh_browser_injected_scripts_for_label(&app, &label);
+
+    let browser = browser_window(&app)?;
+    if !browser.is_visible().unwrap_or(true) {
+        browser
+            .show()
+            .map_err(|err| format!("Show window failed: {err}"))?;
+        let _ = browser.set_focus();
+    }
+    navigate_browser_to(&browser, &target)?;
 
     update_persist(&state, |persist| {
         persist.last_url = target.clone();
         persist.window_visible = true;
     })?;
+
+    push_log(&app, "ui", "new_tab", "ok");
     Ok(target)
 }
 
 #[tauri::command]
 fn close_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppResult<bool> {
-    let closing = {
+    push_log(&app, "ui", "close_tab", format!("start:{}", index));
+
+    let next_url = {
         let mut locked = state
             .data
             .lock()
             .map_err(|_| "State lock poisoned".to_string())?;
 
         if locked.tabs.is_empty() {
-            return Ok(true);
+            state.home_url.clone()
         } else if locked.tabs.len() == 1 {
-            locked.tabs[0].url = HOME_URL.to_string();
-            locked.tabs[0].title = tab_title_from_url(HOME_URL);
+            locked.tabs[0].url = state.home_url.clone();
+            locked.tabs[0].title = tab_title_from_url(&state.home_url);
+            locked.tabs[0].label = BROWSER_LABEL.to_string();
             locked.active_tab = 0;
-            None
+            state.home_url.clone()
         } else {
             let current_idx = locked.active_tab.min(locked.tabs.len() - 1);
             let remove_idx = if index < 0 {
@@ -2163,44 +2263,33 @@ fn close_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppRe
             } else {
                 (index as usize).min(locked.tabs.len() - 1)
             };
-            let removed = locked.tabs.remove(remove_idx);
+            locked.tabs.remove(remove_idx);
             let next_idx = if remove_idx >= locked.tabs.len() {
                 locked.tabs.len() - 1
             } else {
                 remove_idx
             };
             locked.active_tab = next_idx;
-            Some((
-                removed.label,
-                locked.tabs[next_idx].label.clone(),
-                locked.tabs[next_idx].url.clone(),
-            ))
+            locked.tabs[next_idx].label = BROWSER_LABEL.to_string();
+            locked.tabs[next_idx].url.clone()
         }
     };
 
-    if let Some((remove_label, next_label, next_url)) = closing {
-        if let Ok(mut closing_set) = state.closing_windows.lock() {
-            closing_set.insert(remove_label.clone());
-        }
-        if let Ok(to_close) = browser_window_by_label(&app, &remove_label) {
-            let _ = persist_browser_state_for_label(&app, &remove_label, false);
-            let _ = to_close.close();
-        }
-        let next = browser_window_by_label(&app, &next_label)?;
-        next.show()
-            .map_err(|err| format!("Show window failed: {err}"))?;
-        let _ = next.set_focus();
-        refresh_browser_injected_scripts_for_label(&app, &next_label);
-        update_persist(&state, |persist| {
-            persist.last_url = next_url.clone();
-            persist.window_visible = true;
-        })?;
-        return Ok(true);
-    }
-
     let browser = browser_window(&app)?;
-    navigate_browser_to(&browser, HOME_URL)?;
-    set_active_tab_url(&state, HOME_URL.to_string())?;
+    if !browser.is_visible().unwrap_or(true) {
+        browser
+            .show()
+            .map_err(|err| format!("Show window failed: {err}"))?;
+        let _ = browser.set_focus();
+    }
+    navigate_browser_to(&browser, &next_url)?;
+
+    update_persist(&state, |persist| {
+        persist.last_url = next_url.clone();
+        persist.window_visible = true;
+    })?;
+
+    push_log(&app, "ui", "close_tab", "ok");
     Ok(true)
 }
 
@@ -2223,6 +2312,33 @@ fn video_action(app: AppHandle, action: String) -> AppResult<()> {
 }
 
 #[tauri::command]
+fn go_back(app: AppHandle) -> AppResult<String> {
+    let browser = browser_window(&app)?;
+    browser
+        .eval("window.history.back();")
+        .map_err(|err| format!("Evaluate JS failed: {err}"))?;
+    Ok("ok".to_string())
+}
+
+#[tauri::command]
+fn go_forward(app: AppHandle) -> AppResult<String> {
+    let browser = browser_window(&app)?;
+    browser
+        .eval("window.history.forward();")
+        .map_err(|err| format!("Evaluate JS failed: {err}"))?;
+    Ok("ok".to_string())
+}
+
+#[tauri::command]
+fn refresh_page(app: AppHandle) -> AppResult<String> {
+    let browser = browser_window(&app)?;
+    browser
+        .eval("window.location.reload();")
+        .map_err(|err| format!("Evaluate JS failed: {err}"))?;
+    Ok("ok".to_string())
+}
+
+#[tauri::command]
 fn toggle_sidebar(app: AppHandle) -> AppResult<bool> {
     let state = app.state::<AppState>();
     let next = !state.sidebar_visible.load(Ordering::SeqCst);
@@ -2238,7 +2354,7 @@ fn toggle_sidebar(app: AppHandle) -> AppResult<bool> {
             .map(|tab| tab.label.clone())
             .collect::<Vec<_>>()
     };
-    let script = sidebar_visibility_script(next);
+    let script = shared_shell_visibility_script(next);
     for label in labels {
         if let Ok(browser) = browser_window_by_label(&app, &label) {
             let _ = browser.eval(script.clone());
@@ -2253,7 +2369,11 @@ fn open_control_panel(app: AppHandle) -> AppResult<()> {
 }
 
 #[tauri::command]
-fn save_hotkeys(app: AppHandle, state: tauri::State<AppState>, config: HotkeyConfig) -> AppResult<()> {
+fn save_hotkeys(
+    app: AppHandle,
+    state: tauri::State<AppState>,
+    config: HotkeyConfig,
+) -> AppResult<()> {
     let sanitized = config.sanitize();
     {
         let mut locked = state
@@ -2287,6 +2407,13 @@ fn close_app(app: AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+#[tauri::command]
+fn open_external(app: AppHandle, url: String) -> AppResult<()> {
+    app.opener()
+        .open_url(url, None::<String>)
+        .map_err(|err| format!("Open external url failed: {err}"))
+}
+
 fn resolve_data_dir(app: &AppHandle) -> PathBuf {
     if let Ok(path) = app.path().app_local_data_dir() {
         return path;
@@ -2300,18 +2427,65 @@ fn resolve_data_dir(app: &AppHandle) -> PathBuf {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| -> Result<(), Box<dyn std::error::Error>> {
             let data_dir = resolve_data_dir(&app.handle().clone());
             fs::create_dir_all(&data_dir)?;
 
             let history_path = data_dir.join("history.json");
             let hotkeys_path = data_dir.join("hotkeys.json");
+            let runtime_log_path = data_dir.join("runtime.log");
+            let _ = fs::write(&runtime_log_path, b"");
+            eprintln!(
+                "[diviewer-log] runtime log file: {}",
+                runtime_log_path.display()
+            );
 
+            let panic_log_path = runtime_log_path.clone();
+            std::panic::set_hook(Box::new(move |info| {
+                let ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0);
+                let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+                    (*s).to_string()
+                } else if let Some(s) = info.payload().downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "panic payload unavailable".to_string()
+                };
+                let location = info
+                    .location()
+                    .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                    .unwrap_or_else(|| "unknown".to_string());
+                let line = format!(
+                    "[diviewer-panic] {} location={} message={}",
+                    ts, location, message
+                );
+                eprintln!("{}", line);
+                if let Ok(mut file) = fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&panic_log_path)
+                {
+                    let _ = writeln!(file, "{}", line);
+                }
+            }));
+
+            let home_url = resolve_home_url(&app.handle().clone());
             let mut persist = read_json::<PersistedState>(&history_path).unwrap_or_default();
-            persist.last_url = normalize_url(&persist.last_url);
+            persist.last_url = normalize_url_with_home(&persist.last_url, &home_url);
+            persist.tab_urls = sanitize_tab_urls(persist.tab_urls, &home_url);
+            if persist.tab_urls.is_empty() {
+                persist.tab_urls.push(persist.last_url.clone());
+            }
+            persist.active_tab_index = persist.active_tab_index.min(persist.tab_urls.len() - 1);
+            persist.last_url = persist.tab_urls[persist.active_tab_index].clone();
+            persist.window_inside = false;
+            persist.window_maximized = false;
             persist.window_opacity = persist.window_opacity.clamp(0.2, 1.0);
             persist.window_visible = true;
-            persist.bookmarks = sanitize_bookmarks(persist.bookmarks);
+            persist.bookmarks = sanitize_bookmarks(persist.bookmarks, &home_url);
             let ui_lang_zh = match normalize_ui_lang(&persist.ui_language) {
                 Some("zh") => true,
                 Some("en") => false,
@@ -2323,8 +2497,8 @@ pub fn run() {
                 "en".to_string()
             };
             persist.dock_color = normalize_dock_color(&persist.dock_color).to_string();
-            let (initial_tabs, initial_active_tab) = build_tabs_from_persist(&mut persist);
-            let next_tab_id_seed = initial_tabs.len().max(1) as u64;
+            let (initial_tabs, initial_active_tab) =
+                build_tabs_from_persist(&mut persist, &home_url);
 
             let hotkeys = read_json::<HotkeyConfig>(&hotkeys_path)
                 .unwrap_or_default()
@@ -2333,6 +2507,8 @@ pub fn run() {
             app.manage(AppState {
                 history_path,
                 hotkeys_path,
+                runtime_log_path,
+                home_url,
                 ui_lang_zh: AtomicBool::new(ui_lang_zh),
                 data: Mutex::new(RuntimeState {
                     tabs: initial_tabs,
@@ -2340,14 +2516,15 @@ pub fn run() {
                     persist,
                     hotkeys,
                 }),
-                next_tab_id: AtomicU64::new(next_tab_id_seed),
                 closing_windows: Mutex::new(HashSet::new()),
                 snapping: AtomicBool::new(false),
                 move_seq: AtomicU64::new(0),
                 sidebar_visible: AtomicBool::new(true),
+                log_store: Mutex::new(Vec::new()),
             });
 
             create_browser_window(&app.handle().clone()).map_err(std::io::Error::other)?;
+            let _ = resize_to_ratio_impl(&app.handle().clone(), 0.5);
             setup_tray(&app.handle().clone()).map_err(std::io::Error::other)?;
 
             {
@@ -2375,10 +2552,15 @@ pub fn run() {
             set_dock_color,
             navigate,
             go_home,
+            go_back,
+            go_forward,
+            refresh_page,
             toggle_show_hide,
             toggle_inside_mode,
+            set_inside_mode,
             toggle_on_top,
             set_opacity,
+            set_shell_opacity,
             increase_opacity,
             decrease_opacity,
             toggle_lock_position,
@@ -2387,6 +2569,7 @@ pub fn run() {
             add_bookmark,
             remove_bookmark,
             list_tabs,
+            get_logs,
             switch_tab,
             new_tab,
             close_tab,
@@ -2397,7 +2580,8 @@ pub fn run() {
             open_control_panel,
             save_hotkeys,
             reset_hotkeys,
-            close_app
+            close_app,
+            open_external
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -2406,5 +2590,3 @@ pub fn run() {
 fn main() {
     run();
 }
-
-

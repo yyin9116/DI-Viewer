@@ -35,6 +35,7 @@ async function main() {
   const basePort = toPort(process.env.DI_VIEWER_DEV_PORT, 17333);
   const port = await findFreePort(basePort);
   const devUrl = `http://127.0.0.1:${port}`;
+  const homeUrl = `${devUrl}/lucid-start-page/index.html`;
 
   const override = {
     build: {
@@ -50,6 +51,7 @@ async function main() {
   await fs.writeFile(tempConfigPath, JSON.stringify(override, null, 2), "utf8");
 
   console.log(`[DI-Viewer] Using dev server: ${devUrl}`);
+  console.log(`[DI-Viewer] Dev home page: ${homeUrl}`);
   console.log(`[DI-Viewer] Config override: ${tempConfigPath}`);
 
   if (dryRun) {
@@ -61,7 +63,10 @@ async function main() {
   const child = spawn(process.execPath, [runner, "dev", "--config", tempConfigPath], {
     cwd: process.cwd(),
     stdio: "inherit",
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      DI_VIEWER_HOME_URL: homeUrl
+    },
     shell: false
   });
 

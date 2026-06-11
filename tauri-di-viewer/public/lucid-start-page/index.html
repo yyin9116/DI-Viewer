@@ -1,0 +1,1845 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lucid Start Page</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect x='10' y='10' width='80' height='80' rx='18' fill='%23f8fafc'/%3E%3Crect x='20' y='20' width='60' height='60' rx='12' fill='%230f172a'/%3E%3Cpath d='M35 38h30M35 50h30M35 62h18' stroke='%23f8fafc' stroke-width='6' stroke-linecap='round'/%3E%3C/svg%3E">
+  <style>
+    :root {
+      --bg: #F4F4F0;
+      --card: #ffffff;
+      --soft: #fafaf9;
+      --line: #e7e5e4;
+      --text: #292524;
+      --muted: #78716c;
+      --shadow: 0 1px 2px rgba(28, 25, 23, 0.06);
+      --ring: rgba(168, 162, 158, 0.2);
+    }
+
+    html.dark {
+      --bg: #0A0A0A;
+      --card: #141414;
+      --soft: #1A1A1A;
+      --line: #292524;
+      --text: #f5f5f4;
+      --muted: #a8a29e;
+      --shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+      --ring: rgba(63, 63, 70, 0.42);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 16px 12px 20px;
+      overflow: auto;
+      font: 16px/1.5 "Segoe UI", system-ui, sans-serif;
+      color: var(--text);
+      background: radial-gradient(circle at top, rgba(255, 255, 255, 0.26), transparent 36%), var(--bg);
+      transition: padding 0.28s ease, background 0.28s ease;
+    }
+
+    body.shell-open {
+      padding: 128px 18px 24px 104px;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    button {
+      cursor: pointer;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .theme {
+      position: fixed;
+      top: 14px;
+      right: 14px;
+      z-index: 20;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid #e7e5e4;
+      background: #ffffff;
+      color: #78716c;
+      box-shadow: 0 1px 2px rgba(28, 25, 23, 0.06);
+      transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    }
+
+    .dark .theme {
+      background: #1c1c1c;
+      border-color: #292524;
+      color: #a8a29e;
+    }
+
+    .theme:hover {
+      background: #fafaf9;
+      color: #57534e;
+    }
+
+    .dark .theme:hover {
+      background: #2a2a2a;
+      color: #d6d3d1;
+    }
+
+    .theme .i-btn {
+      width: 20px;
+      height: 20px;
+    }
+
+    body.shell-open .theme {
+      top: 112px;
+      right: 18px;
+    }
+
+    .wrap {
+      width: min(100%, 1180px);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: clamp(14px, 2vw, 24px);
+      padding: 0;
+      transition: padding 0.28s ease;
+    }
+
+    body.shell-open .wrap {
+      padding-top: 0;
+    }
+
+    .card {
+      border: 1px solid #f1f5f9;
+      border-radius: 32px;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(28, 25, 23, 0.05);
+    }
+
+    .dark .card {
+      border-color: rgba(41, 37, 36, 0.55);
+      background: #141414;
+      box-shadow: none;
+    }
+
+    .clock,
+    .greet,
+    .links,
+    .recent {
+      padding: 30px;
+    }
+
+    .clock {
+      grid-column: span 5;
+      min-height: clamp(156px, 22vh, 210px);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    .greet {
+      grid-column: span 7;
+      min-height: clamp(156px, 22vh, 210px);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .greet::after {
+      content: "";
+      position: absolute;
+      right: -48px;
+      bottom: -48px;
+      width: 210px;
+      height: 210px;
+      border-top-left-radius: 999px;
+      background: #fafaf9;
+    }
+
+    .dark .greet::after {
+      background: #1a1a1a;
+    }
+
+    .time {
+      font: clamp(54px, 8vw, 78px)/0.95 Georgia, serif;
+      letter-spacing: -0.04em;
+    }
+
+    .sub,
+    .label {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .title {
+      margin: 0 0 10px;
+      font: clamp(34px, 4vw, 48px)/1.08 Georgia, serif;
+    }
+
+    .desc {
+      margin: 0;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .search {
+      grid-column: 1 / -1;
+      position: relative;
+      z-index: 30;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+      height: 64px;
+      padding: 0 10px;
+      border: 1px solid #e7e5e4;
+      border-radius: 24px;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(28, 25, 23, 0.06);
+      transition: all 0.3s ease;
+      overflow: visible;
+    }
+
+    .dark .search {
+      background: #1c1c1c;
+      border-color: #292524;
+      box-shadow: none;
+    }
+
+    .search:focus-within {
+      border-color: #d6d3d1;
+      box-shadow: 0 0 0 4px #f5f5f4;
+    }
+
+    .dark .search:focus-within {
+      border-color: #44403c;
+      box-shadow: 0 0 0 4px rgba(41, 37, 36, 0.55);
+    }
+
+    .q {
+      border: 0;
+      outline: none;
+      background: transparent;
+      color: var(--text);
+    }
+
+    .engine-dropdown {
+      position: relative;
+      display: flex;
+      align-items: center;
+      flex: 0 0 auto;
+      height: 100%;
+    }
+
+    .engine-button {
+      height: calc(100% - 10px);
+      min-width: 156px;
+      margin-left: 5px;
+      padding: 0 16px;
+      border: 0;
+      border-radius: 16px;
+      background: #f8f7f5;
+      color: #57534e;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+      box-shadow: none;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .engine-button:hover {
+      color: #44403c;
+      background: #f1efed;
+    }
+
+    .engine-button:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.24);
+      background: #f1efed;
+    }
+
+    .dark .engine-button {
+      color: #d6d3d1;
+      background: #21201f;
+      box-shadow: none;
+    }
+
+    .dark .engine-button:hover {
+      color: #f5f5f4;
+      background: #2a2928;
+    }
+
+    .dark .engine-button:focus-visible {
+      box-shadow: 0 0 0 2px rgba(20, 184, 166, 0.38);
+      background: #2a2928;
+    }
+
+    .engine-button .i-btn {
+      width: 16px;
+      height: 16px;
+      stroke-width: 1.85;
+      flex: none;
+      display: block;
+    }
+
+    .engine-search,
+    .engine-chevron {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+    }
+
+    .engine-name {
+      line-height: 1;
+      transform: translateY(0.5px);
+    }
+
+    .engine-button .engine-chevron .i-btn {
+      width: 14px;
+      height: 14px;
+      opacity: 0.66;
+      transition: transform 0.2s ease;
+    }
+
+    .engine-button.open .engine-chevron .i-btn {
+      transform: rotate(180deg);
+    }
+
+    .engine-menu {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      width: 168px;
+      padding: 8px;
+      border-radius: 16px;
+      border: 1px solid #f1f5f9;
+      background: #ffffff;
+      box-shadow: 0 20px 40px rgba(28, 25, 23, 0.12);
+      display: none;
+      z-index: 80;
+    }
+
+    .engine-menu.show {
+      display: block;
+    }
+
+    .dark .engine-menu {
+      border-color: #292524;
+      background: #1c1c1c;
+      box-shadow: 0 24px 42px rgba(0, 0, 0, 0.4);
+    }
+
+    .engine-option {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      border-radius: 12px;
+      padding: 10px 12px;
+      text-align: left;
+      font-size: 14px;
+      color: #57534e;
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .engine-option:hover {
+      background: #fafaf9;
+    }
+
+    .engine-option.active {
+      background: #f5f5f4;
+      color: #1c1917;
+      font-weight: 600;
+    }
+
+    .dark .engine-option {
+      color: #a8a29e;
+    }
+
+    .dark .engine-option:hover {
+      background: #222222;
+    }
+
+    .dark .engine-option.active {
+      background: #2a2a2a;
+      color: #f5f5f4;
+    }
+
+    .q {
+      flex: 1;
+      height: 100%;
+      padding: 0 8px;
+      font-size: 18px;
+      font-weight: 500;
+      color: #292524;
+    }
+
+    .q::placeholder {
+      color: #a8a29e;
+    }
+
+    .dark .q {
+      color: #e7e5e4;
+    }
+
+    .dark .q::placeholder {
+      color: #78716c;
+    }
+
+    .links {
+      grid-column: span 8;
+    }
+
+    .recent {
+      grid-column: span 4;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      min-height: 260px;
+    }
+
+    .recent-head {
+      justify-content: flex-start;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .recent-head .i-btn {
+      width: 16px;
+      height: 16px;
+      color: var(--muted);
+    }
+
+    .recent-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+    }
+
+    .recent-empty {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      opacity: 0.75;
+      font-style: italic;
+      font-size: 14px;
+    }
+
+    .recent-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 0;
+      border-radius: 16px;
+      background: var(--soft);
+      padding: 12px;
+      transition: background 0.2s ease;
+    }
+
+    .recent-item:hover {
+      background: color-mix(in srgb, var(--soft) 84%, white);
+    }
+
+    .dark .recent-item:hover {
+      background: color-mix(in srgb, var(--soft) 88%, black);
+    }
+
+    .recent-icon-wrap {
+      color: var(--muted);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .recent-icon-wrap .i-btn {
+      width: 14px;
+      height: 14px;
+      stroke-width: 1.9;
+    }
+
+    .recent-content {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      text-align: left;
+      color: inherit;
+    }
+
+    .recent-title {
+      font-size: 13px;
+      color: var(--text);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .recent-url {
+      font-size: 10px;
+      color: var(--muted);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .recent-remove {
+      width: 22px;
+      height: 22px;
+      border: 0;
+      padding: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      opacity: 0;
+      transition: opacity 0.18s ease, background 0.18s ease, color 0.18s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .recent-item:hover .recent-remove {
+      opacity: 1;
+    }
+
+    .recent-remove .i-btn {
+      width: 12px;
+      height: 12px;
+    }
+
+    .recent-remove:hover {
+      background: rgba(248, 113, 113, 0.15);
+      color: #ef4444;
+    }
+
+    .head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    .edit {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .edit .i-btn {
+      width: 18px;
+      height: 18px;
+      stroke-width: 1.65;
+      vector-effect: non-scaling-stroke;
+      shape-rendering: geometricPrecision;
+    }
+
+    .edit.on,
+    .edit:hover {
+      border-color: var(--line);
+      background: var(--soft);
+      color: var(--text);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .item,
+    .add {
+      position: relative;
+      display: flex;
+      min-height: 96px;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 16px 10px;
+      border: 1px solid transparent;
+      border-radius: 16px;
+      background: #fafaf9;
+      transition: background 0.2s ease, border-color 0.2s ease;
+    }
+
+    .dark .item,
+    .dark .add {
+      background: #1a1a1a;
+    }
+
+    .item:hover,
+    .add:hover {
+      border-color: #e7e5e4;
+      background: #f5f5f4;
+    }
+
+    .dark .item:hover,
+    .dark .add:hover {
+      border-color: #3f3f46;
+      background: #222222;
+    }
+
+    .icon {
+      width: 28px;
+      height: 28px;
+      margin-bottom: 12px;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      border-radius: 8px;
+      background: transparent;
+      color: #a8a29e;
+      transition: color 0.2s ease;
+    }
+
+    .item:hover .icon,
+    .add:hover .icon {
+      color: #57534e;
+    }
+
+    .dark .item:hover .icon,
+    .dark .add:hover .icon {
+      color: #d6d3d1;
+    }
+
+    .icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .icon svg {
+      width: 28px;
+      height: 28px;
+      stroke-width: 1.5;
+      vector-effect: non-scaling-stroke;
+      shape-rendering: geometricPrecision;
+    }
+
+    .name {
+      width: 100%;
+      overflow: hidden;
+      color: #a8a29e;
+      text-align: center;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      transition: color 0.2s ease;
+    }
+
+    .item:hover .name,
+    .add:hover .name {
+      color: #78716c;
+    }
+
+    .dark .item:hover .name,
+    .dark .add:hover .name {
+      color: #d6d3d1;
+    }
+
+    .tools,
+    .drag {
+      position: absolute;
+      display: none;
+      gap: 6px;
+    }
+
+    .tools {
+      top: -7px;
+      right: -7px;
+    }
+
+    .drag {
+      top: -7px;
+      left: -7px;
+    }
+
+    .onedit .tools,
+    .onedit .drag {
+      display: flex;
+    }
+
+    .t {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #e7e5e4;
+      border-radius: 999px;
+      background: #ffffff;
+      color: #78716c;
+      box-shadow: 0 1px 2px rgba(28, 25, 23, 0.08);
+    }
+
+    .dark .t {
+      border-color: #3f3f46;
+      background: #1f1f1f;
+      color: #a8a29e;
+    }
+
+    .t.edit-act {
+      border-color: #3b82f6;
+      background: #3b82f6;
+      color: #ffffff;
+    }
+
+    .t.del-act {
+      border-color: #ef4444;
+      background: #ef4444;
+      color: #ffffff;
+    }
+
+    .t .i-btn {
+      width: 13px;
+      height: 13px;
+    }
+
+    .add {
+      border-style: dashed;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    .add .icon {
+      background: transparent;
+    }
+
+    .hide {
+      display: none !important;
+    }
+
+    @media (max-width: 980px) {
+      .clock,
+      .greet,
+      .links,
+      .recent {
+        grid-column: 1 / -1;
+      }
+
+      .grid {
+        grid-template-columns: repeat(4, 1fr);
+      }
+    }
+
+    @media (max-width: 680px) {
+      body {
+        padding: 12px 10px 16px;
+      }
+
+      body.shell-open {
+        padding: 116px 12px 16px 88px;
+      }
+
+      .wrap {
+        gap: 14px;
+        padding-top: 54px;
+      }
+
+      body.shell-open .wrap {
+        padding-top: 0;
+      }
+
+      .clock,
+      .greet,
+      .links,
+      .recent {
+        padding: 20px;
+      }
+
+      .search {
+        height: auto;
+        min-height: 64px;
+        padding: 8px 10px;
+      }
+
+      .engine-dropdown {
+        height: 48px;
+      }
+
+      .engine-button {
+        min-width: 136px;
+        padding: 0 12px;
+        border-radius: 14px;
+        font-size: 13px;
+      }
+
+      .engine-menu {
+        width: 160px;
+      }
+
+      .grid {
+        grid-template-columns: repeat(3, 1fr);
+      }
+
+      .recent-item .recent-remove {
+        opacity: 1;
+      }
+    }
+
+    /* Quick links editor modal */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(10px);
+      z-index: 60;
+    }
+
+    .modal-backdrop.show {
+      display: flex;
+    }
+
+    .modal {
+      width: min(560px, 92vw);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 32px;
+      padding: 20px 22px;
+      box-shadow: var(--shadow);
+      color: var(--text);
+    }
+
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .modal-head h3 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .modal-body {
+      display: grid;
+      gap: 14px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .field input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: var(--text);
+      outline: none;
+    }
+
+    .field input:focus {
+      box-shadow: 0 0 0 4px var(--ring);
+    }
+
+    .tab-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .tab-btn {
+      flex: 1;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 8px 10px;
+      font-weight: 700;
+      background: transparent;
+      color: var(--muted);
+      transition: all 0.2s ease;
+    }
+
+    .tab-btn.active {
+      background: var(--text);
+      color: #ffffff;
+      border-color: var(--text);
+    }
+
+    .dark .tab-btn.active {
+      background: #e2e8f0;
+      color: #0f172a;
+      border-color: #e2e8f0;
+    }
+
+    .icon-picker {
+      max-height: 180px;
+      overflow: auto;
+      padding: 10px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .icon-choice {
+      border-radius: 10px;
+      padding: 8px;
+      display: grid;
+      place-items: center;
+      border: 1px solid transparent;
+      color: var(--muted);
+      transition: all 0.15s ease;
+    }
+
+    .icon-choice.active {
+      border-color: var(--line);
+      background: var(--card);
+      color: var(--text);
+    }
+
+    .upload {
+      border: 2px dashed var(--line);
+      border-radius: 14px;
+      padding: 18px;
+      text-align: center;
+      background: var(--soft);
+      color: var(--muted);
+    }
+
+    .upload .preview {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .upload img {
+      width: 60px;
+      height: 60px;
+      object-fit: contain;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.6);
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .btn {
+      padding: 10px 16px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .btn.primary {
+      background: #0f172a;
+      border-color: #0f172a;
+      color: #ffffff;
+    }
+
+    .dark .btn.primary {
+      background: #e2e8f0;
+      border-color: #e2e8f0;
+      color: #0f172a;
+    }
+
+    .btn.ghost {
+      background: transparent;
+    }
+
+    .item.onedit {
+      border-style: dashed;
+    }
+
+    .drag {
+      cursor: grab;
+    }
+
+  </style>
+</head>
+<body>
+  <button id="themeToggle" class="theme" type="button" aria-label="Toggle theme"></button>
+
+  <main class="wrap">
+    <section class="card clock">
+      <div id="time" class="time">--:--</div>
+      <div id="date" class="sub">Loading date...</div>
+    </section>
+    <section class="card greet">
+      <h2 id="greetTitle" class="title">Good day.</h2>
+      <p id="greetDesc" class="desc">Stay focused and keep building.</p>
+    </section>
+    <form id="search" class="search">
+      <div class="engine-dropdown">
+        <button id="engineButton" class="engine-button" type="button" aria-label="Select search engine"></button>
+        <div id="engineMenu" class="engine-menu"></div>
+      </div>
+      <input id="q" class="q" placeholder="Search with Google..." autocomplete="off" autofocus>
+    </form>
+    <section class="card links">
+      <div class="head">
+        <div id="favoritesLabel" class="label">Favorites</div>
+        <button id="edit" class="edit" title="Edit links" aria-label="Edit links"></button>
+      </div>
+      <div id="grid" class="grid"></div>
+    </section>
+    <section class="card recent">
+      <div class="head recent-head">
+        <span id="recentIcon"></span>
+        <div id="recentLabel" class="label">Recent</div>
+      </div>
+      <div id="recentList" class="recent-list"></div>
+    </section>
+  </main>
+
+  <div id="linkModal" class="modal-backdrop">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="linkModalTitle">
+      <div class="modal-head">
+        <h3 id="linkModalTitle">Edit Link</h3>
+        <button id="linkModalClose" class="edit" aria-label="Close">
+          <span style="font-size:18px;">x</span>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>Name</label>
+          <input id="linkName" type="text" placeholder="e.g. GitHub" />
+        </div>
+        <div class="field">
+          <label>URL</label>
+          <input id="linkUrl" type="url" placeholder="https://" />
+        </div>
+        <div class="field">
+          <label>Icon</label>
+          <div class="tab-row">
+            <button id="tabLucide" class="tab-btn active" type="button">Choose Icon</button>
+            <button id="tabCustom" class="tab-btn" type="button">Upload Custom</button>
+          </div>
+          <div id="iconPicker" class="icon-picker"></div>
+          <div id="iconUpload" class="upload" style="display:none;">
+            <div class="preview" id="customPreview" style="display:none;">
+              <img id="customPreviewImg" alt="Custom icon" />
+              <button id="customClear" class="btn ghost" type="button">Remove</button>
+            </div>
+            <div>
+              <div style="margin-bottom:10px;">Upload a square image (PNG, JPG, SVG)</div>
+              <button id="customSelect" class="btn" type="button">Select File</button>
+              <input id="customFile" type="file" accept="image/*" style="display:none;" />
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button id="linkModalCancel" class="btn ghost" type="button">Cancel</button>
+        <button id="linkModalSave" class="btn primary" type="button">Save Link</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEYS = { links: 'zen_quick_links', engine: 'zen_search_engine', recent: 'zen_recent' };
+    const STATE = { editing: false, draggingId: null };
+    const LUCIDE_ICON_PATHS = {
+      Globe: '<circle cx="12" cy="12" r="10"></circle><path d="M2 12h20"></path><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>',
+      Github: '<path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>',
+      Youtube: '<path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-1.96C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 1.96A29 29 0 0 0 1 12a29 29 0 0 0 .46 5.58 2.78 2.78 0 0 0 1.94 1.96C5.12 20 12 20 12 20s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-1.96A29 29 0 0 0 23 12a29 29 0 0 0-.46-5.58z"></path><polygon points="9.75 15.02 15.5 12 9.75 8.98 9.75 15.02"></polygon>',
+      Music: '<path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle>',
+      Twitter: '<path d="M22 4.01c-1 .49-2.02.82-3.12.97a5.3 5.3 0 0 0 2.34-2.91 10.46 10.46 0 0 1-3.36 1.28 5.28 5.28 0 0 0-9.15 3.61c0 .41.05.81.14 1.19A14.96 14.96 0 0 1 2 3.15a5.28 5.28 0 0 0 1.63 7.05 5.2 5.2 0 0 1-2.39-.66v.07a5.29 5.29 0 0 0 4.24 5.18 5.35 5.35 0 0 1-2.38.09 5.29 5.29 0 0 0 4.93 3.67A10.6 10.6 0 0 1 2 20.13 14.93 14.93 0 0 0 10.07 22c9.69 0 14.98-8.03 14.98-14.98 0-.23 0-.45-.02-.67A10.57 10.57 0 0 0 22 4.01z"></path>',
+      Mail: '<rect x="2" y="4" width="20" height="16" rx="2"></rect><polyline points="22,7 13.03,13 12,13.67 10.97,13 2,7"></polyline>',
+      Code: '<polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline>',
+      Image: '<rect x="3" y="3" width="18" height="18" rx="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><path d="M21 15l-5-5L5 21"></path>',
+      Map: '<polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"></polygon><line x1="9" y1="3" x2="9" y2="18"></line><line x1="15" y1="6" x2="15" y2="21"></line>',
+      Settings: '<path d="M12.22 2h-.44a2 2 0 0 0-1.98 1.72l-.14.97a2 2 0 0 1-.6 1.17l-.72.69a2 2 0 0 1-1.18.54l-.97.1A2 2 0 0 0 4 9.17v.44a2 2 0 0 0 1.72 1.98l.97.14a2 2 0 0 1 1.17.6l.69.72a2 2 0 0 1 .54 1.18l.1.97A2 2 0 0 0 11.17 20h.44a2 2 0 0 0 1.98-1.72l.14-.97a2 2 0 0 1 .6-1.17l.72-.69a2 2 0 0 1 1.18-.54l.97-.1A2 2 0 0 0 20 12.83v-.44a2 2 0 0 0-1.72-1.98l-.97-.14a2 2 0 0 1-1.17-.6l-.69-.72a2 2 0 0 1-.54-1.18l-.1-.97A2 2 0 0 0 12.83 2z"></path><circle cx="12" cy="12" r="3"></circle>',
+      SlidersHorizontal: '<line x1="21" y1="4" x2="14" y2="4"></line><line x1="10" y1="4" x2="3" y2="4"></line><line x1="21" y1="12" x2="12" y2="12"></line><line x1="8" y1="12" x2="3" y2="12"></line><line x1="21" y1="20" x2="16" y2="20"></line><line x1="12" y1="20" x2="3" y2="20"></line><line x1="14" y1="2" x2="14" y2="6"></line><line x1="8" y1="10" x2="8" y2="14"></line><line x1="16" y1="18" x2="16" y2="22"></line>',
+      Edit2: '<path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>',
+      Trash2: '<polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path>',
+      GripHorizontal: '<line x1="8" y1="12" x2="16" y2="12"></line><line x1="8" y1="16" x2="16" y2="16"></line><line x1="8" y1="8" x2="16" y2="8"></line>',
+      Plus: '<line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line>',
+      X: '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>',
+      Search: '<circle cx="11" cy="11" r="8"></circle><path d="m21 21-4.3-4.3"></path>',
+      Link: '<path d="M10 13a5 5 0 0 0 7.54.54l1.92-1.92a5 5 0 0 0-7.07-7.07l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-1.92 1.92a5 5 0 0 0 7.07 7.07l1.1-1.1"></path>',
+      ChevronDown: '<path d="m6 9 6 6 6-6"></path>',
+      Moon: '<path d="M12 3a6 6 0 0 0 9 6 9 9 0 1 1-9-6z"></path>',
+      Sun: '<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path>',
+      History: '<path d="M3 3v5h5"></path><path d="M3.05 13a9 9 0 1 0 .5-4"></path><path d="M12 7v5l3 2"></path>'
+    };
+
+    const ICON_CHOICES = ['Globe', 'Github', 'Youtube', 'Music', 'Twitter', 'Mail', 'Code', 'Image', 'Map', 'Settings'];
+    const ENGINES = [
+      { id: 'google', name: 'Google', url: 'https://www.google.com/search?q=' },
+      { id: 'bing', name: 'Bing', url: 'https://www.bing.com/search?q=' },
+      { id: 'baidu', name: 'Baidu', url: 'https://www.baidu.com/s?wd=' }
+    ];
+
+    const LEGACY_ICON_TO_NAME = {
+      GH: 'Github',
+      YT: 'Youtube',
+      X: 'Twitter',
+      '@': 'Mail',
+      '</>': 'Code',
+      IMG: 'Image',
+      MU: 'Music',
+      MAP: 'Map',
+      WEB: 'Globe',
+      SET: 'Settings'
+    };
+
+    const DEFAULT_LINKS = [
+      { id: 'github', name: 'GitHub', url: 'https://github.com', iconType: 'lucide', iconName: 'Github' },
+      { id: 'youtube', name: 'YouTube', url: 'https://youtube.com', iconType: 'lucide', iconName: 'Youtube' },
+      { id: 'bilibili', name: 'Bilibili', url: 'https://bilibili.com', iconType: 'lucide', iconName: 'Music' },
+      { id: 'twitter', name: 'Twitter', url: 'https://twitter.com', iconType: 'lucide', iconName: 'Twitter' },
+      { id: 'mail', name: 'Mail', url: 'https://mail.google.com', iconType: 'lucide', iconName: 'Mail' },
+      { id: 'code', name: 'Code', url: 'https://vscode.dev', iconType: 'lucide', iconName: 'Code' },
+      { id: 'images', name: 'Images', url: 'https://unsplash.com', iconType: 'lucide', iconName: 'Image' },
+      { id: 'maps', name: 'Maps', url: 'https://maps.google.com', iconType: 'lucide', iconName: 'Map' }
+    ];
+
+    const $ = (selector) => document.querySelector(selector);
+    const grid = $('#grid');
+    const recentList = $('#recentList');
+
+    const LANG = {
+      loadingDate: 'Loading date...',
+      greetTitle: 'Good day.',
+      greetDesc: 'Stay focused and keep building.',
+      favorites: 'Favorites',
+      editLinks: 'Edit links',
+      add: 'Add',
+      linkName: 'Link name',
+      linkUrl: 'Link URL',
+      iconPrompt: 'Icon name (e.g. Globe, Github, Youtube, Music, Map)',
+      searchPlaceholder: 'Search with {engine}...',
+      recent: 'Recent',
+      noRecent: 'No recent activity'
+    };
+
+    function getHostBridge() {
+      return window.__diviewer_bridge || window.bridge || null;
+    }
+
+    let links = [];
+    let editingLink = null;
+    let engineIndex = 0;
+    let showEngineMenu = false;
+    let formData = {
+      name: '',
+      url: 'https://',
+      iconType: 'lucide',
+      iconName: 'Globe',
+      customIconUrl: ''
+    };
+
+    const modal = $('#linkModal');
+    const themeToggle = $('#themeToggle');
+    const engineButton = $('#engineButton');
+    const engineMenu = $('#engineMenu');
+    const modalTitle = $('#linkModalTitle');
+    const modalClose = $('#linkModalClose');
+    const modalCancel = $('#linkModalCancel');
+    const modalSave = $('#linkModalSave');
+    const nameInput = $('#linkName');
+    const urlInput = $('#linkUrl');
+    const tabLucide = $('#tabLucide');
+    const tabCustom = $('#tabCustom');
+    const iconPicker = $('#iconPicker');
+    const iconUpload = $('#iconUpload');
+    const customPreview = $('#customPreview');
+    const customPreviewImg = $('#customPreviewImg');
+    const customClear = $('#customClear');
+    const customSelect = $('#customSelect');
+    const customFile = $('#customFile');
+
+    function esc(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function applyTheme(mode) {
+      document.documentElement.classList.toggle('dark', mode === 'dark');
+    }
+
+    function resolveShellTheme() {
+      const host = document.getElementById('__diviewer_shared_root__');
+      const fromShadow = host?.shadowRoot?.querySelector('.diviewer-host-root')?.getAttribute('data-theme');
+      const fromHost = host?.getAttribute('data-theme');
+      const next = (fromShadow || fromHost || '').toLowerCase();
+      return next === 'dark' ? 'dark' : 'light';
+    }
+
+    function syncThemeFromShell() {
+      applyTheme(resolveShellTheme());
+      renderThemeToggle();
+    }
+
+    function renderThemeToggle() {
+      if (!themeToggle) return;
+      const dark = document.documentElement.classList.contains('dark');
+      themeToggle.innerHTML = lucideIconMarkup(dark ? 'Sun' : 'Moon', 'i-btn');
+    }
+
+    function getCurrentEngine() {
+      return ENGINES[engineIndex] || ENGINES[0];
+    }
+
+    function updateSearchPlaceholder() {
+      const input = $('#q');
+      if (!input) return;
+      const current = getCurrentEngine();
+      input.placeholder = LANG.searchPlaceholder.replace('{engine}', current.name);
+    }
+
+    function toggleEngineMenu(next) {
+      if (!engineMenu || !engineButton) return;
+      showEngineMenu = Boolean(next);
+      engineMenu.classList.toggle('show', showEngineMenu);
+      engineButton.classList.toggle('open', showEngineMenu);
+      if (showEngineMenu) {
+        engineButton.setAttribute('aria-expanded', 'true');
+      } else {
+        engineButton.setAttribute('aria-expanded', 'false');
+      }
+    }
+
+    function renderEngineDropdown() {
+      if (!engineButton || !engineMenu) return;
+      const current = getCurrentEngine();
+      engineButton.innerHTML = `
+        <span class="engine-search">${lucideIconMarkup('Search', 'i-btn')}</span>
+        <span class="engine-name">${esc(current.name)}</span>
+        <span class="engine-chevron">${lucideIconMarkup('ChevronDown', 'i-btn')}</span>
+      `;
+      engineMenu.innerHTML = ENGINES.map((engine, index) => {
+        const active = index === engineIndex ? ' active' : '';
+        return `<button type="button" class="engine-option${active}" data-engine-index="${index}">${esc(engine.name)}</button>`;
+      }).join('');
+      updateSearchPlaceholder();
+    }
+
+    function setEngine(nextIndex, persist = true) {
+      const normalized = Number.isFinite(nextIndex) ? nextIndex : 0;
+      engineIndex = Math.max(0, Math.min(ENGINES.length - 1, normalized));
+      if (persist) {
+        localStorage.setItem(STORAGE_KEYS.engine, ENGINES[engineIndex].id);
+      }
+      renderEngineDropdown();
+      toggleEngineMenu(false);
+    }
+
+    function applyShellInset() {
+      const host = document.getElementById('__diviewer_shared_root__');
+      const shadowOpen = host?.shadowRoot?.querySelector('.diviewer-host-root')?.getAttribute('data-sidebar-visible');
+      const hostOpen = host?.getAttribute('data-sidebar-visible');
+      const isOpen = (shadowOpen ?? hostOpen ?? 'true') !== 'false';
+      document.body.classList.toggle('shell-open', Boolean(isOpen));
+    }
+
+    function bindShellObserver() {
+      const host = document.getElementById('__diviewer_shared_root__');
+      if (!host || host.__diviewerObserverBound) return;
+      const observer = new MutationObserver(applyShellInset);
+      observer.observe(host, { attributes: true, attributeFilter: ['data-sidebar-visible'] });
+      host.__diviewerObserverBound = true;
+      applyShellInset();
+    }
+
+    function updateClock() {
+      const now = new Date();
+      $('#time').textContent = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      $('#date').textContent = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    }
+
+    function normalizeUrl(value) {
+      const trimmed = String(value || '').trim();
+      if (!trimmed) return '';
+      return /^(https?:\/\/|file:\/\/|mailto:)/i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    }
+
+    function normalizeIconName(value, fallback = 'Globe') {
+      const raw = String(value || '').trim();
+      if (raw && LUCIDE_ICON_PATHS[raw]) return raw;
+      const mapped = LEGACY_ICON_TO_NAME[raw];
+      if (mapped && LUCIDE_ICON_PATHS[mapped]) return mapped;
+      return fallback;
+    }
+
+    function lucideIconMarkup(name, className = '') {
+      const normalized = normalizeIconName(name);
+      const paths = LUCIDE_ICON_PATHS[normalized] || LUCIDE_ICON_PATHS.Globe;
+      const classAttr = className ? ` class="${esc(className)}"` : '';
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"${classAttr}>${paths}</svg>`;
+    }
+
+    function iconMarkup(link) {
+      if (link.iconType === 'custom' && link.customIconUrl) {
+        return `<img src="${esc(link.customIconUrl)}" alt="${esc(link.name)}">`;
+      }
+      return lucideIconMarkup(link.iconName || link.icon || 'Globe');
+    }
+
+    function saveLinks() {
+      localStorage.setItem(STORAGE_KEYS.links, JSON.stringify(links));
+    }
+
+    function getRecentItems() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEYS.recent);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveRecentItems(items) {
+      localStorage.setItem(STORAGE_KEYS.recent, JSON.stringify(items.slice(0, 5)));
+    }
+
+    function getHostname(urlStr) {
+      try {
+        return new URL(urlStr).hostname.replace(/^www\./, '');
+      } catch {
+        return urlStr;
+      }
+    }
+
+    function renderRecentItems() {
+      if (!recentList) return;
+      const items = getRecentItems();
+      if (!items.length) {
+        recentList.innerHTML = `<div class="recent-empty">${esc(LANG.noRecent)}</div>`;
+        return;
+      }
+      recentList.innerHTML = items.map((item) => {
+        const iconName = item.type === 'search' ? 'Search' : 'Link';
+        return `
+          <div class="recent-item" data-id="${esc(item.id)}">
+            <span class="recent-icon-wrap">${lucideIconMarkup(iconName, 'i-btn')}</span>
+            <button type="button" class="recent-content" data-act="open">
+              <span class="recent-title">${esc(item.title || '')}</span>
+              <span class="recent-url">${esc(getHostname(item.url || ''))}</span>
+            </button>
+            <button type="button" class="recent-remove" data-act="remove">${lucideIconMarkup('X', 'i-btn')}</button>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function addRecentItem(payload) {
+      const url = normalizeUrl(payload?.url || '');
+      if (!url) return;
+      const title = String(payload?.title || getHostname(url)).trim() || url;
+      const type = payload?.type === 'search' ? 'search' : 'link';
+      const items = getRecentItems().filter((item) => normalizeUrl(item.url || '') !== url);
+      items.unshift({
+        id: Math.random().toString(36).slice(2, 9),
+        title,
+        url,
+        type,
+        timestamp: Date.now()
+      });
+      saveRecentItems(items);
+      renderRecentItems();
+    }
+
+    if (recentList) {
+      recentList.addEventListener('click', (event) => {
+        const itemEl = event.target.closest('.recent-item');
+        if (!itemEl) return;
+        const id = itemEl.getAttribute('data-id');
+        const items = getRecentItems();
+        const item = items.find((entry) => String(entry.id) === String(id));
+        if (!item) return;
+        const act = event.target.closest('[data-act]')?.getAttribute('data-act');
+        if (act === 'remove') {
+          saveRecentItems(items.filter((entry) => String(entry.id) !== String(id)));
+          renderRecentItems();
+          return;
+        }
+        if (act === 'open') {
+          const bridge = getHostBridge();
+          if (bridge && typeof bridge.navigate === 'function') {
+            Promise.resolve(bridge.navigate(item.url)).catch(() => {
+              location.href = item.url;
+            });
+          } else {
+            location.href = item.url;
+          }
+        }
+      });
+    }
+
+    function parseMaybeJson(value) {
+      if (typeof value !== 'string') return value;
+      const trimmed = value.trim();
+      if (!trimmed) return value;
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        return value;
+      }
+    }
+
+    function normalizeHostBookmarks(input) {
+      const raw = parseMaybeJson(input);
+      if (!Array.isArray(raw)) return [];
+      return raw.map((item, idx) => ({
+        id: `host_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+        name: String(item?.title || item?.name || item?.url || 'Link').trim() || 'Link',
+        url: normalizeUrl(String(item?.url || '')),
+        iconType: 'lucide',
+        iconName: 'Globe'
+      })).filter((item) => item.url);
+    }
+
+    function syncHostAdd(url, title) {
+      const bridge = getHostBridge();
+      if (bridge && typeof bridge.add_bookmark === 'function') {
+        Promise.resolve(bridge.add_bookmark(url, title)).catch(() => {});
+      }
+    }
+
+    function syncHostRemove(url) {
+      const bridge = getHostBridge();
+      if (bridge && typeof bridge.remove_bookmark === 'function') {
+        Promise.resolve(bridge.remove_bookmark(url)).catch(() => {});
+      }
+    }
+
+    function upsertLink(link) {
+      const normalized = normalizeUrl(link.url).toLowerCase();
+      const idx = links.findIndex((item) => normalizeUrl(item.url).toLowerCase() === normalized);
+      if (idx >= 0) {
+        links[idx] = { ...links[idx], ...link };
+      } else {
+        links = [link, ...links].slice(0, 60);
+      }
+      saveLinks();
+      renderLinks();
+    }
+
+    async function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEYS.links);
+        links = raw ? JSON.parse(raw) : DEFAULT_LINKS;
+      } catch {
+        links = [...DEFAULT_LINKS];
+      }
+
+      if (!Array.isArray(links) || !links.length) {
+        links = [...DEFAULT_LINKS];
+      }
+
+      links = links.map((link, index) => {
+        const url = normalizeUrl(link?.url || '');
+        if (!url) return null;
+        const iconType = link?.iconType === 'custom' && link?.customIconUrl ? 'custom' : 'lucide';
+        return {
+          id: String(link?.id || `link_${index}_${Math.random().toString(36).slice(2, 7)}`),
+          name: String(link?.name || `Link ${index + 1}`).trim() || `Link ${index + 1}`,
+          url,
+          iconType,
+          iconName: iconType === 'lucide' ? normalizeIconName(link?.iconName || link?.icon || 'Globe') : undefined,
+          customIconUrl: iconType === 'custom' ? String(link?.customIconUrl || '') : undefined
+        };
+      }).filter(Boolean);
+
+      const bridge = getHostBridge();
+      if (bridge && typeof bridge.get_bookmarks === 'function') {
+        const hostItems = normalizeHostBookmarks(await Promise.resolve(bridge.get_bookmarks()).catch(() => []));
+        if (hostItems.length) {
+          const existing = new Map();
+          links.forEach((item) => existing.set(normalizeUrl(item.url).toLowerCase(), item));
+          hostItems.forEach((item) => {
+            const key = normalizeUrl(item.url).toLowerCase();
+            if (!existing.has(key)) {
+              links.unshift(item);
+            }
+          });
+        }
+      }
+
+      const savedEngine = localStorage.getItem(STORAGE_KEYS.engine);
+      if (savedEngine) {
+        const byId = ENGINES.findIndex((engine) => engine.id === savedEngine);
+        const byUrl = ENGINES.findIndex((engine) => engine.url === savedEngine);
+        if (byId >= 0) {
+          engineIndex = byId;
+        } else if (byUrl >= 0) {
+          engineIndex = byUrl;
+        }
+      }
+      renderEngineDropdown();
+      syncThemeFromShell();
+      applyShellInset();
+      bindShellObserver();
+    }
+
+    function renderLinks() {
+      grid.innerHTML = '';
+      links.forEach((link) => {
+        const el = document.createElement(STATE.editing ? 'button' : 'a');
+        el.className = `item${STATE.editing ? ' onedit' : ''}`;
+        if (STATE.editing) {
+          el.type = 'button';
+        } else {
+          el.href = link.url;
+          el.addEventListener('click', () => {
+            addRecentItem({ title: link.name, url: link.url, type: 'link' });
+          });
+        }
+        el.dataset.id = link.id;
+        el.innerHTML = `
+          <div class="drag"><button class="t drag-act" type="button">${lucideIconMarkup('GripHorizontal', 'i-btn')}</button></div>
+          <div class="tools">
+            <button class="t edit-act" type="button" data-act="edit">${lucideIconMarkup('Edit2', 'i-btn')}</button>
+            <button class="t del-act" type="button" data-act="del">${lucideIconMarkup('X', 'i-btn')}</button>
+          </div>
+          <div class="icon">${iconMarkup(link)}</div>
+          <div class="name">${esc(link.name)}</div>
+        `;
+
+        el.onclick = (event) => {
+          if (!STATE.editing) return;
+          const action = event.target.closest('[data-act]')?.dataset.act;
+          if (action === 'del') {
+            links = links.filter((item) => item.id !== link.id);
+            saveLinks();
+            renderLinks();
+            syncHostRemove(link.url);
+          }
+          if (action === 'edit') {
+            openModal(link);
+          }
+        };
+
+        if (STATE.editing) {
+          const dragHandle = el.querySelector('.drag');
+          if (dragHandle) {
+            dragHandle.draggable = true;
+            dragHandle.addEventListener('dragstart', (e) => {
+              STATE.draggingId = link.id;
+              e.dataTransfer.setData('text/plain', link.id);
+              e.dataTransfer.effectAllowed = 'move';
+            });
+          }
+
+          el.addEventListener('dragover', (e) => {
+            if (!STATE.editing) return;
+            e.preventDefault();
+          });
+
+          el.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const fromId = STATE.draggingId || e.dataTransfer.getData('text/plain');
+            const toId = link.id;
+            if (!fromId || fromId === toId) return;
+            const fromIdx = links.findIndex((item) => item.id === fromId);
+            const toIdx = links.findIndex((item) => item.id === toId);
+            if (fromIdx < 0 || toIdx < 0) return;
+            const updated = [...links];
+            const [moved] = updated.splice(fromIdx, 1);
+            updated.splice(toIdx, 0, moved);
+            links = updated;
+            saveLinks();
+            renderLinks();
+          });
+        }
+
+        grid.appendChild(el);
+      });
+
+      if (STATE.editing) {
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'add';
+        add.innerHTML = `<div class="icon">${lucideIconMarkup('Plus')}</div><div class="name">${esc(LANG.add)}</div>`;
+        add.onclick = () => openModal();
+        grid.appendChild(add);
+      }
+    }
+
+    function setIconType(type) {
+      formData.iconType = type;
+      tabLucide.classList.toggle('active', type === 'lucide');
+      tabCustom.classList.toggle('active', type === 'custom');
+      iconPicker.style.display = type === 'lucide' ? 'grid' : 'none';
+      iconUpload.style.display = type === 'custom' ? 'block' : 'none';
+    }
+
+    function renderIconPicker() {
+      iconPicker.innerHTML = '';
+      ICON_CHOICES.forEach((name) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `icon-choice${formData.iconName === name ? ' active' : ''}`;
+        btn.innerHTML = lucideIconMarkup(name);
+        btn.onclick = () => {
+          formData.iconName = name;
+          renderIconPicker();
+        };
+        iconPicker.appendChild(btn);
+      });
+    }
+
+    function openModal(link) {
+      editingLink = link || null;
+      if (link) {
+        formData = {
+          name: link.name || '',
+          url: link.url || 'https://',
+          iconType: link.iconType || 'lucide',
+          iconName: link.iconName || 'Globe',
+          customIconUrl: link.customIconUrl || ''
+        };
+        modalTitle.textContent = 'Edit Link';
+      } else {
+        formData = { name: '', url: 'https://', iconType: 'lucide', iconName: 'Globe', customIconUrl: '' };
+        modalTitle.textContent = 'Add Link';
+      }
+
+      nameInput.value = formData.name;
+      urlInput.value = formData.url;
+      setIconType(formData.iconType);
+      renderIconPicker();
+
+      if (formData.customIconUrl) {
+        customPreview.style.display = 'flex';
+        customPreviewImg.src = formData.customIconUrl;
+      } else {
+        customPreview.style.display = 'none';
+        customPreviewImg.src = '';
+      }
+
+      modal.classList.add('show');
+    }
+
+    function closeModal() {
+      modal.classList.remove('show');
+      editingLink = null;
+    }
+
+    function saveModal() {
+      const name = nameInput.value.trim();
+      const url = normalizeUrl(urlInput.value);
+      if (!name || !url) return;
+
+      const next = {
+        id: editingLink?.id || `link_${Math.random().toString(36).slice(2, 9)}`,
+        name,
+        url,
+        iconType: formData.iconType,
+        iconName: formData.iconType === 'lucide' ? normalizeIconName(formData.iconName, 'Globe') : undefined,
+        customIconUrl: formData.iconType === 'custom' ? formData.customIconUrl : undefined
+      };
+
+      if (editingLink) {
+        const oldUrl = editingLink.url;
+        links = links.map((item) => (item.id === editingLink.id ? { ...item, ...next } : item));
+        if (oldUrl !== url) {
+          syncHostRemove(oldUrl);
+        }
+        syncHostAdd(url, name);
+      } else {
+        links = [...links, next];
+        syncHostAdd(url, name);
+      }
+
+      saveLinks();
+      renderLinks();
+      closeModal();
+    }
+
+    function addBookmarkFromShell(detail) {
+      const rawUrl = normalizeUrl(detail?.url || '');
+      if (!rawUrl) return;
+      const rawTitle = String(detail?.title || '').trim();
+      let fallbackName = rawUrl;
+      try {
+        fallbackName = new URL(rawUrl).hostname || rawUrl;
+      } catch {
+        fallbackName = rawUrl;
+      }
+      const name = (rawTitle || fallbackName).slice(0, 40);
+      upsertLink({
+        id: `link_${Math.random().toString(36).slice(2, 9)}`,
+        name,
+        url: rawUrl,
+        iconType: 'lucide',
+        iconName: 'Globe'
+      });
+    }
+
+    // Event bindings
+    $('#edit').innerHTML = lucideIconMarkup('SlidersHorizontal', 'i-btn');
+    $('#date').textContent = LANG.loadingDate;
+    $('#greetTitle').textContent = LANG.greetTitle;
+    $('#greetDesc').textContent = LANG.greetDesc;
+    $('#favoritesLabel').textContent = LANG.favorites;
+    if ($('#recentLabel')) { $('#recentLabel').textContent = LANG.recent; }
+    if ($('#recentIcon')) { $('#recentIcon').innerHTML = lucideIconMarkup('History', 'i-btn'); }
+    updateSearchPlaceholder();
+    $('#edit').title = LANG.editLinks;
+    $('#edit').setAttribute('aria-label', LANG.editLinks);
+
+    $('#edit').onclick = () => {
+      STATE.editing = !STATE.editing;
+      $('#edit').classList.toggle('on', STATE.editing);
+      renderLinks();
+    };
+
+    if (themeToggle) {
+      themeToggle.onclick = () => {
+        const next = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
+        applyTheme(next);
+        renderThemeToggle();
+        window.dispatchEvent(new CustomEvent('diviewer:page-theme-change', { detail: { theme: next } }));
+      };
+    }
+
+    modalClose.onclick = closeModal;
+    modalCancel.onclick = closeModal;
+    modalSave.onclick = saveModal;
+
+    tabLucide.onclick = () => setIconType('lucide');
+    tabCustom.onclick = () => setIconType('custom');
+
+    customSelect.onclick = () => customFile.click();
+    customFile.onchange = (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        formData.customIconUrl = reader.result;
+        customPreview.style.display = 'flex';
+        customPreviewImg.src = formData.customIconUrl;
+      };
+      reader.readAsDataURL(file);
+    };
+
+    customClear.onclick = () => {
+      formData.customIconUrl = '';
+      customPreview.style.display = 'none';
+      customPreviewImg.src = '';
+    };
+
+    if (engineButton) {
+      engineButton.onclick = (event) => {
+        event.stopPropagation();
+        toggleEngineMenu(!showEngineMenu);
+      };
+    }
+
+    if (engineMenu) {
+      engineMenu.addEventListener('click', (event) => {
+        const option = event.target.closest('[data-engine-index]');
+        if (!option) return;
+        const rawIndex = Number(option.getAttribute('data-engine-index'));
+        if (!Number.isFinite(rawIndex)) return;
+        setEngine(rawIndex);
+      });
+    }
+
+    document.addEventListener('mousedown', (event) => {
+      if (!showEngineMenu) return;
+      const target = event.target;
+      if (engineMenu?.contains(target) || engineButton?.contains(target)) return;
+      toggleEngineMenu(false);
+    });
+
+    $('#search').onsubmit = (event) => {
+      event.preventDefault();
+      const query = $('#q').value.trim();
+      if (query) {
+        const target = getCurrentEngine().url + encodeURIComponent(query);
+        addRecentItem({ title: query, url: target, type: 'search' });
+        const bridge = getHostBridge();
+        if (bridge && typeof bridge.navigate === 'function') {
+          Promise.resolve(bridge.navigate(target)).catch(() => {
+            location.href = target;
+          });
+        } else {
+          location.href = target;
+        }
+      }
+    };
+
+    window.addEventListener('diviewer:sync', () => {
+      bindShellObserver();
+      applyShellInset();
+      syncThemeFromShell();
+    });
+
+    window.addEventListener('diviewer:theme-change', (event) => {
+      const theme = event?.detail?.theme;
+      if (theme === 'dark' || theme === 'light') {
+        applyTheme(theme);
+      } else {
+        syncThemeFromShell();
+      }
+    });
+
+    window.addEventListener('diviewer:bookmark-added', (event) => {
+      addBookmarkFromShell(event?.detail || {});
+    });
+
+    (async () => {
+      await loadState();
+      renderLinks();
+      renderRecentItems();
+      renderThemeToggle();
+      updateClock();
+      setInterval(updateClock, 1000);
+      setInterval(bindShellObserver, 600);
+    })();
+  </script>
+</body>
+</html>
