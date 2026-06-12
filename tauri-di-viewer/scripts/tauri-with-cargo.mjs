@@ -29,6 +29,21 @@ function buildPathWithCargo(env) {
   return existing.join(path.delimiter);
 }
 
+function applyPathEnv(env, value) {
+  if (process.platform !== "win32") {
+    env.PATH = value;
+    return;
+  }
+
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === "path") || "Path";
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "path" && key !== pathKey) {
+      delete env[key];
+    }
+  }
+  env[pathKey] = value;
+}
+
 const args = process.argv.slice(2);
 if (args.length === 0) {
   console.error("Usage: node scripts/tauri-with-cargo.mjs <tauri args...>");
@@ -39,7 +54,7 @@ function runChecked(command, commandArgs, options) {
   const result = spawn(command, commandArgs, {
     ...options,
     stdio: "inherit",
-    shell: false
+    shell: process.platform === "win32"
   });
   return new Promise((resolve, reject) => {
     result.on("error", reject);
@@ -61,10 +76,7 @@ const command = process.platform === "win32" ? "npx.cmd" : "npx";
 const commandArgs = ["tauri", ...args];
 
 const env = { ...process.env };
-env.PATH = buildPathWithCargo(env);
-if (process.platform === "win32" && "Path" in env) {
-  delete env.Path;
-}
+applyPathEnv(env, buildPathWithCargo(env));
 
 function shellEscape(value) {
   if (/^[A-Za-z0-9_./:=+-]+$/.test(value)) return value;
