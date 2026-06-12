@@ -1,113 +1,121 @@
 # DI-Viewer
 
-DI-Viewer 是一个面向桌面场景的悬浮浏览器项目，目标是用更轻量的方式，把网页能力嵌入到日常工作流中。
+DI-Viewer 是一个桌面悬浮浏览器。它适合把视频、直播、文档、网页工具或仪表盘放在屏幕边上，并通过侧边控制条完成置顶、透明度、收藏、媒体控制和快速隐藏。
 
-项目目前包含两套并行实现：
+它不是完整浏览器的替代品，而是一个更轻的桌面网页容器：当你需要一个网页一直在旁边，但又不想频繁切回主浏览器时使用。
 
-- `pyside-di-viewer/`：PySide6 版本（Python 技术栈）
-- `tauri-di-viewer/`：Tauri 版本（Rust + WebView 技术栈）
-- `shared/`：两端共享的注入 UI 资源（`inject.html` / `inject.css` / `inject.js`）
+![DI-Viewer 本地起始页](docs/assets/readme/start-page.png)
 
-## 用途与定位
+## 下载
 
-DI-Viewer 适合以下场景：
+从 GitHub Releases 下载最新版本：
 
-- 视频学习或直播时的悬浮控制
-- 需要常驻网页工具面板的工作场景
-- 对窗口透明、置顶、吸附、快捷控制有明确需求的用户
-- 需要多标签并行浏览，同时保持轻量桌面体验的场景
+[下载最新版 DI-Viewer](https://github.com/yyin9116/DI-Viewer/releases/latest)
 
-核心定位是“可叠加在桌面上的高可控浏览器容器”，而不是传统全屏浏览器替代品。
+当前发布产物：
 
-## 核心特点
+- Windows x64：`.exe` 安装包、`.msi` 安装包
+- macOS Apple Silicon：`.dmg`
 
-- 悬浮窗口：支持无边框、置顶、透明度调节
-- 交互增强：侧边栏注入式控制面板
-- 多标签：支持并行标签管理与切换
-- 窗口控制：吸附、最小化、锁定位置、窗口尺寸预设
-- 媒体辅助：播放控制、快进快退、全屏请求
-- 数据能力：书签与配置持久化
+## 你可以用它做什么
 
-## 创新点
+- 把课程、直播、会议回放或视频网页置顶到桌面边缘
+- 常驻打开翻译、文档、监控面板、内部工具等网页
+- 在网页旁边写代码、做笔记或处理其他任务
+- 用较小窗口浏览网页，并随时调整透明度或隐藏
+- 在外部网页中保留 DI-Viewer 的左侧控制条
 
-- 双实现并行架构
-- 同一产品同时保留 PySide 与 Tauri 两种实现路径，降低技术路线单点风险
-- 共享注入资产层
-- 将交互 UI 注入资源独立到 `shared/`，两端复用同一套界面与行为逻辑
-- 真多 WebView 标签方案（Tauri）
-- 通过多窗口模型实现更接近并行渲染的标签体验，而非单窗口伪会话切换
-- 故障可观测性增强
-- 桥接调用由静默失败升级为可观测日志，便于排障与稳定性演进
-- 会话恢复机制
-- 标签与窗口状态持久化，重启后可恢复到接近上次工作现场
+## 主要功能
 
-## 设计架构
+- 本地起始页：搜索、快捷入口、最近访问、夜间模式
+- 多标签：在一个桌面容器内打开和切换多个网页
+- 悬浮窗口：置顶、透明度、显示/隐藏、窗口尺寸控制
+- 左侧控制条：收藏、媒体控制、全屏、设置、折叠
+- 媒体辅助：播放/暂停、快进、快退、请求全屏
+- 主题同步：起始页和控制台跟随明暗模式
+- 状态保存：书签、标签和部分偏好会在重启后保留
 
-```text
-DI-Viewer/
-  pyside-di-viewer/      # Python + PySide6 实现
-  tauri-di-viewer/       # Rust + Tauri 实现
-  shared/                # 共用注入资源
-```
+![DI-Viewer 左侧控制条](docs/assets/readme/control-shell.png)
 
-架构分层：
+![DI-Viewer 侧边栏展开与折叠](docs/assets/readme/sidebar-toggle-google.gif)
 
-- 宿主层：窗口生命周期、系统能力、持久化
-- 浏览层：WebView 渲染与导航控制
-- 注入层：侧边栏 UI、桥接协议、功能入口
-- 配置层：热键、书签、窗口参数
+## 快速开始
 
-## 技术栈
+1. 下载适合你系统的安装包。
+2. 安装并启动 DI-Viewer。
+3. 在起始页输入网址或搜索关键词。
+4. 打开网页后，使用左侧控制条进行收藏、媒体控制、全屏和设置调整。
 
-- PySide 方案：Python + PySide6 + Qt WebEngine + QWebChannel
-- Tauri 方案：Rust + Tauri v2 + WebView + 前端注入
-- 前端资源：HTML/CSS/JavaScript（共享注入资源）
+常用操作：
 
-## 环境要求
+- 折叠左侧控制条：减少对网页内容的遮挡
+- 切换夜间模式：起始页和控制台会同步变更
+- 调整透明度：让网页辅助信息更不打扰当前工作
+- 添加收藏：把常用网页固定到起始页
 
-PySide 版本：
+## 常见问题
 
-- Python 3.10+
-- 依赖见 `pyside-di-viewer/requirements.txt`
+### 某些网站提示浏览器版本过低
 
-Tauri 版本：
+DI-Viewer 使用系统 WebView，网站兼容性取决于系统 WebView、站点检测逻辑和当前 UA 策略。项目会持续改善常见站点兼容性，但不能保证所有网站都表现得和主流浏览器完全一致。
 
-- Node.js 20+
-- Rust stable
-- Windows 打包依赖 NSIS
+### 控制条挡住网页内容
 
-## 使用方法
+可以折叠左侧控制条，或调整窗口尺寸。部分网页自己的浮层、播放器控制条可能仍会和 DI-Viewer 控制条发生视觉冲突。
 
-运行 PySide 版本：
+### Release 里应该下载哪个文件
 
-```powershell
-cd pyside-di-viewer
-pip install -r requirements.txt
-python main.py
-```
+Windows 用户优先下载 `.exe` 安装包；如果你的环境更习惯企业部署或系统安装器，可以使用 `.msi`。Apple Silicon Mac 用户下载 `.dmg`。
 
-运行 Tauri 版本（开发模式）：
+## 隐私与权限
 
-```powershell
-cd tauri-di-viewer
+DI-Viewer 会加载你主动打开的网页。网页自身的网络请求、登录状态和第三方内容由对应网站控制。
+
+应用侧会保存用于恢复体验的数据，例如书签、标签、起始页设置和部分窗口偏好。请不要把 DI-Viewer 当作安全隔离浏览器使用，也不要在不信任的网页中输入敏感信息。
+
+## 开发者入口
+
+如果你只是使用 DI-Viewer，下载 Releases 即可。
+
+仓库结构：
+
+- `tauri-di-viewer/`：当前主要桌面应用
+- `shared/`：浏览器控制台共享前端
+- `pyside-di-viewer/`：早期 PySide 实现
+- `docs/releases/`：版本更新日志
+
+本地运行 Tauri 版本：
+
+```bash
+cd shared
 npm ci
-npm run tauri dev
+npm run build
+
+cd ../tauri-di-viewer
+npm ci
+npm run tauri:dev:auto-port
 ```
 
-打包 Tauri 为 Windows EXE：
+本地验证常用命令：
 
-```powershell
+```bash
+cd shared
+npm run build
+
+cd ../tauri-di-viewer/src-tauri
+cargo check
+```
+
+打包桌面版本：
+
+```bash
 cd tauri-di-viewer
 npm ci
 npm run tauri build
 ```
 
-构建产物通常位于：
+发布版本通过 `v*` tag 触发 GitHub Actions，Release note 位于 `docs/releases/<tag>.md`。
 
-`tauri-di-viewer/src-tauri/target/release/bundle/nsis/*.exe`
+## 许可证
 
-## 当前状态说明
-
-- 项目已具备可运行的双实现结构
-- 已配置 GitHub Actions 自动构建发布流程（按 tag 触发）
-- 当前仍在持续优化跨平台打包稳定性与产物完整性
+当前仓库未声明开源许可证。未经作者明确许可，请不要将代码用于再分发或商业用途。
