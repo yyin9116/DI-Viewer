@@ -1,6 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use serde::{Deserialize, Serialize};
+mod persistence;
+
+use persistence::{
+    current_timestamp_ms, read_json_or_default, write_json, BookmarkItem, HotkeyConfig,
+    PersistedState,
+};
+use serde::Serialize;
 use std::{
     collections::HashSet,
     fs,
@@ -108,115 +114,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 type AppResult<T> = Result<T, String>;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct HotkeyConfig {
-    toggle_play_pause: String,
-    toggle_recording: String,
-    toggle_show_hide: String,
-    inside_mode: String,
-    video_backward: String,
-    video_forward: String,
-    decrease_opacity: String,
-    increase_opacity: String,
-    request_full_screen: String,
-    close_window: String,
-}
-
-impl Default for HotkeyConfig {
-    fn default() -> Self {
-        Self {
-            toggle_play_pause: "Backquote".to_string(),
-            toggle_recording: "R".to_string(),
-            toggle_show_hide: "0".to_string(),
-            inside_mode: "P".to_string(),
-            video_backward: "5".to_string(),
-            video_forward: "6".to_string(),
-            decrease_opacity: "7".to_string(),
-            increase_opacity: "8".to_string(),
-            request_full_screen: "O".to_string(),
-            close_window: "Ctrl+Q".to_string(),
-        }
-    }
-}
-
-impl HotkeyConfig {
-    fn sanitize(self) -> Self {
-        let default = Self::default();
-        Self {
-            toggle_play_pause: normalize_hotkey(self.toggle_play_pause, &default.toggle_play_pause),
-            toggle_recording: normalize_hotkey(self.toggle_recording, &default.toggle_recording),
-            toggle_show_hide: normalize_hotkey(self.toggle_show_hide, &default.toggle_show_hide),
-            inside_mode: normalize_hotkey(self.inside_mode, &default.inside_mode),
-            video_backward: normalize_hotkey(self.video_backward, &default.video_backward),
-            video_forward: normalize_hotkey(self.video_forward, &default.video_forward),
-            decrease_opacity: normalize_hotkey(self.decrease_opacity, &default.decrease_opacity),
-            increase_opacity: normalize_hotkey(self.increase_opacity, &default.increase_opacity),
-            request_full_screen: normalize_hotkey(
-                self.request_full_screen,
-                &default.request_full_screen,
-            ),
-            close_window: normalize_hotkey(self.close_window, &default.close_window),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BookmarkItem {
-    title: String,
-    url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedState {
-    last_url: String,
-    window_start_x: f64,
-    window_start_y: f64,
-    window_width: f64,
-    window_height: f64,
-    window_opacity: f64,
-    window_on_top: bool,
-    window_inside: bool,
-    window_visible: bool,
-    window_maximized: bool,
-    #[serde(default)]
-    window_position_locked: bool,
-    #[serde(default)]
-    bookmarks: Vec<BookmarkItem>,
-    #[serde(default)]
-    tab_urls: Vec<String>,
-    #[serde(default)]
-    active_tab_index: usize,
-    #[serde(default)]
-    ui_language: String,
-    #[serde(default = "default_dock_color")]
-    dock_color: String,
-}
-
-impl Default for PersistedState {
-    fn default() -> Self {
-        Self {
-            last_url: LEGACY_HOME_URL.to_string(),
-            window_start_x: 560.0,
-            window_start_y: 240.0,
-            window_width: 980.0,
-            window_height: 680.0,
-            window_opacity: 1.0,
-            window_on_top: true,
-            window_inside: false,
-            window_visible: true,
-            window_maximized: false,
-            window_position_locked: false,
-            bookmarks: Vec::new(),
-            tab_urls: vec![LEGACY_HOME_URL.to_string()],
-            active_tab_index: 0,
-            ui_language: String::new(),
-            dock_color: default_dock_color(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FrontendState {
@@ -311,68 +208,6 @@ impl Drop for SnapGuard<'_> {
     }
 }
 
-fn normalize_hotkey(value: String, fallback: &str) -> String {
-    fn normalize_token(token: &str) -> String {
-        let trimmed = token.trim();
-        if trimmed.is_empty() {
-            return String::new();
-        }
-        let lower = trimmed.to_lowercase();
-        match lower.as_str() {
-            "ctrl" | "control" => "Ctrl".to_string(),
-            "alt" => "Alt".to_string(),
-            "shift" => "Shift".to_string(),
-            "cmd" | "command" | "meta" | "super" => "Meta".to_string(),
-            "cmdorctrl" | "commandorcontrol" | "controlorcommand" => "CmdOrControl".to_string(),
-            "`" | "backquote" | "grave" | "graveaccent" => "Backquote".to_string(),
-            "esc" => "Escape".to_string(),
-            "spacebar" => "Space".to_string(),
-            "return" => "Enter".to_string(),
-            "left" => "ArrowLeft".to_string(),
-            "right" => "ArrowRight".to_string(),
-            "up" => "ArrowUp".to_string(),
-            "down" => "ArrowDown".to_string(),
-            _ => {
-                if trimmed.len() == 1 {
-                    let ch = trimmed.chars().next().unwrap_or_default();
-                    if ch.is_ascii_alphabetic() {
-                        return ch.to_ascii_uppercase().to_string();
-                    }
-                }
-                trimmed.to_string()
-            }
-        }
-    }
-
-    fn normalize_shortcut(value: &str) -> Option<String> {
-        let mut modifiers = Vec::<String>::new();
-        let mut key = String::new();
-        for raw in value.split('+') {
-            let token = normalize_token(raw);
-            if token.is_empty() {
-                continue;
-            }
-            match token.as_str() {
-                "Ctrl" | "Alt" | "Shift" | "Meta" | "CmdOrControl" => {
-                    if !modifiers.contains(&token) {
-                        modifiers.push(token);
-                    }
-                }
-                _ => key = token,
-            }
-        }
-        if key.is_empty() {
-            return None;
-        }
-        modifiers.push(key);
-        Some(modifiers.join("+"))
-    }
-
-    normalize_shortcut(&value)
-        .or_else(|| normalize_shortcut(fallback))
-        .unwrap_or_else(|| fallback.to_string())
-}
-
 fn normalize_ui_lang(value: &str) -> Option<&'static str> {
     let lower = value.trim().to_lowercase();
     if lower.starts_with("zh") {
@@ -382,10 +217,6 @@ fn normalize_ui_lang(value: &str) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-fn default_dock_color() -> String {
-    "white".to_string()
 }
 
 fn normalize_dock_color(value: &str) -> &'static str {
@@ -757,16 +588,6 @@ fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-fn write_json<T: Serialize>(path: &Path, value: &T) -> AppResult<()> {
-    let text = serde_json::to_string_pretty(value).map_err(|err| err.to_string())?;
-    fs::write(path, text).map_err(|err| format!("Failed writing {}: {err}", path.display()))
-}
-
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
-    let text = fs::read_to_string(path).ok()?;
-    serde_json::from_str::<T>(&text).ok()
-}
-
 fn save_history(state: &AppState) -> AppResult<()> {
     let snapshot = {
         let locked = state
@@ -958,63 +779,62 @@ fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
     'open_control_panel'
   ]);
 
-  const call = (cmd, args, fallback) => {
+  const call = (cmd, args) => {
     if (!isTrustedStartPage() && !allowedCommands.has(cmd)) {
-      return Promise.resolve(fallback);
+      return Promise.reject(new Error(`DI-Viewer command is not allowed here: ${cmd}`));
     }
     const invokeRaw = resolveInvoke();
     if (typeof invokeRaw !== 'function') {
-      return Promise.resolve(fallback);
+      return Promise.reject(new Error('DI-Viewer invoke bridge is unavailable'));
     }
-    return invokeRaw(cmd, args).catch(() => fallback);
+    return invokeRaw(cmd, args);
   };
 
   const existingBridge = {};
 
   window.__diviewer_bridge = {
     ...existingBridge,
-    get_state: () => call('get_state', undefined, {}),
-    get_tabs: () => call('list_tabs', undefined, { tabs: [], activeIndex: 0 }),
-    get_logs: () => call('get_logs', undefined, []),
-    get_dock_color: () => call('get_dock_color', undefined, 'white'),
-    navigate: (url) => call('navigate', { url: String(url || '') }, ''),
-    go_home: () => call('go_home', undefined, ''),
-    go_back: () => call('go_back', undefined, ''),
-    go_forward: () => call('go_forward', undefined, ''),
-    refresh_page: () => call('refresh_page', undefined, ''),
-    toggle_show_hide: () => call('toggle_show_hide', undefined, false),
-    toggle_on_top: () => call('toggle_on_top', undefined, false),
-    toggle_inside_mode: () => call('toggle_inside_mode', undefined, false),
-    set_inside_mode: (inside) => call('set_inside_mode', { inside: Boolean(inside) }, false),
-    toggle_lock_position: () => call('toggle_lock_position', undefined, false),
-    toggle_sidebar: () => call('toggle_sidebar', undefined, false),
-    set_opacity: (opacity) => call('set_opacity', { opacity: Number(opacity || 1) }, 1),
-    set_shell_opacity: (opacity) => call('set_shell_opacity', { opacity: Number(opacity || 1) }, 1),
-    increase_opacity: () => call('increase_opacity', undefined, 1),
-    decrease_opacity: () => call('decrease_opacity', undefined, 1),
-    minimize: () => call('minimize_browser', undefined, null),
-    maximize_restore: () => call('maximize_restore_browser', undefined, false),
-    close_window: () => call('close_app', undefined, null),
-    new_tab: (url) => call('new_tab', { url: String(url || '') }, ''),
-    close_tab: (index) => call('close_tab', { index: Number(index ?? -1) }, false),
-    switch_tab: (index) => call('switch_tab', { index: Number(index ?? 0) }, ''),
-    get_bookmarks: () => call('get_bookmarks', undefined, []),
-    add_bookmark: (url, title) => call('add_bookmark', { url: String(url || ''), title: String(title || '') }, []),
-    remove_bookmark: (url) => call('remove_bookmark', { url: String(url || '') }, []),
+    get_state: () => call('get_state'),
+    get_tabs: () => call('list_tabs'),
+    get_logs: () => call('get_logs'),
+    get_dock_color: () => call('get_dock_color'),
+    navigate: (url) => call('navigate', { url: String(url || '') }),
+    go_home: () => call('go_home'),
+    go_back: () => call('go_back'),
+    go_forward: () => call('go_forward'),
+    refresh_page: () => call('refresh_page'),
+    toggle_show_hide: () => call('toggle_show_hide'),
+    toggle_on_top: () => call('toggle_on_top'),
+    toggle_inside_mode: () => call('toggle_inside_mode'),
+    set_inside_mode: (inside) => call('set_inside_mode', { inside: Boolean(inside) }),
+    toggle_lock_position: () => call('toggle_lock_position'),
+    toggle_sidebar: () => call('toggle_sidebar'),
+    set_opacity: (opacity) => call('set_opacity', { opacity: Number(opacity || 1) }),
+    set_shell_opacity: (opacity) => call('set_shell_opacity', { opacity: Number(opacity || 1) }),
+    increase_opacity: () => call('increase_opacity'),
+    decrease_opacity: () => call('decrease_opacity'),
+    minimize: () => call('minimize_browser'),
+    maximize_restore: () => call('maximize_restore_browser'),
+    close_window: () => call('close_app'),
+    new_tab: (url) => call('new_tab', { url: String(url || '') }),
+    close_tab: (index) => call('close_tab', { index: Number(index ?? -1) }),
+    switch_tab: (index) => call('switch_tab', { index: Number(index ?? 0) }),
+    get_bookmarks: () => call('get_bookmarks'),
+    add_bookmark: (url, title) => call('add_bookmark', { url: String(url || ''), title: String(title || '') }),
+    remove_bookmark: (url) => call('remove_bookmark', { url: String(url || '') }),
     save_config: (configJson) => {
-      let config = {};
-      try { config = JSON.parse(String(configJson || '{}')); } catch (_e) {}
-      return call('save_hotkeys', { config }, null);
+      const config = JSON.parse(String(configJson || '{}'));
+      return call('save_hotkeys', { config });
     },
-    get_config: () => call('get_hotkeys', undefined, {}),
-    reset_config: () => call('reset_hotkeys', undefined, {}),
-    video_action: (action) => call('video_action', { action: String(action || '') }, null),
-    get_ui_language: () => call('get_ui_language', undefined, 'zh'),
-    set_ui_language: (lang) => call('set_ui_language', { lang: String(lang || 'zh') }, 'zh'),
-    set_dock_color: (color) => call('set_dock_color', { color: String(color || 'white') }, 'white'),
-    resize_to_ratio: (ratio) => call('resize_to_ratio', { ratio: Number(ratio || 0.5) }, 0.5),
-    open_control_panel: () => call('open_control_panel', undefined, null),
-    close_app: () => call('close_app', undefined, null)
+    get_config: () => call('get_hotkeys'),
+    reset_config: () => call('reset_hotkeys'),
+    video_action: (action) => call('video_action', { action: String(action || '') }),
+    get_ui_language: () => call('get_ui_language'),
+    set_ui_language: (lang) => call('set_ui_language', { lang: String(lang || 'zh') }),
+    set_dock_color: (color) => call('set_dock_color', { color: String(color || 'white') }),
+    resize_to_ratio: (ratio) => call('resize_to_ratio', { ratio: Number(ratio || 0.5) }),
+    open_control_panel: () => call('open_control_panel'),
+    close_app: () => call('close_app')
   };
 
   try {
@@ -1944,6 +1764,32 @@ fn push_log(app: &AppHandle, source: &str, action: &str, detail: impl Into<Strin
     };
 }
 
+fn append_runtime_log(path: &Path, source: &str, action: &str, detail: impl AsRef<str>) {
+    let ts = current_timestamp_ms();
+    let line = format!(
+        "[diviewer-log] {} {}:{}:{}",
+        ts,
+        source,
+        action,
+        detail.as_ref()
+    );
+    eprintln!("{}", line);
+    if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(file, "{}", line);
+    }
+}
+
+fn initialize_runtime_log(path: &Path) -> AppResult<()> {
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(path)
+        .map_err(|err| format!("Failed initializing runtime log {}: {err}", path.display()))?;
+    file.sync_all()
+        .map_err(|err| format!("Failed syncing runtime log {}: {err}", path.display()))
+}
+
 fn current_ui_lang(state: &AppState) -> String {
     if state.ui_lang_zh.load(Ordering::SeqCst) {
         "zh".to_string()
@@ -2435,7 +2281,7 @@ pub fn run() {
             let history_path = data_dir.join("history.json");
             let hotkeys_path = data_dir.join("hotkeys.json");
             let runtime_log_path = data_dir.join("runtime.log");
-            let _ = fs::write(&runtime_log_path, b"");
+            initialize_runtime_log(&runtime_log_path)?;
             eprintln!(
                 "[diviewer-log] runtime log file: {}",
                 runtime_log_path.display()
@@ -2473,7 +2319,12 @@ pub fn run() {
             }));
 
             let home_url = resolve_home_url(&app.handle().clone());
-            let mut persist = read_json::<PersistedState>(&history_path).unwrap_or_default();
+            let mut persist = read_json_or_default::<PersistedState>(
+                &history_path,
+                &runtime_log_path,
+                "history_read",
+                append_runtime_log,
+            );
             persist.last_url = normalize_url_with_home(&persist.last_url, &home_url);
             persist.tab_urls = sanitize_tab_urls(persist.tab_urls, &home_url);
             if persist.tab_urls.is_empty() {
@@ -2500,9 +2351,13 @@ pub fn run() {
             let (initial_tabs, initial_active_tab) =
                 build_tabs_from_persist(&mut persist, &home_url);
 
-            let hotkeys = read_json::<HotkeyConfig>(&hotkeys_path)
-                .unwrap_or_default()
-                .sanitize();
+            let hotkeys = read_json_or_default::<HotkeyConfig>(
+                &hotkeys_path,
+                &runtime_log_path,
+                "hotkeys_read",
+                append_runtime_log,
+            )
+            .sanitize();
 
             app.manage(AppState {
                 history_path,
@@ -2589,4 +2444,21 @@ pub fn run() {
 
 fn main() {
     run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_url_maps_legacy_and_plain_hosts() {
+        let home = "file:///tmp/lucid-start-page/index.html";
+
+        assert_eq!(normalize_url_with_home("", home), home);
+        assert_eq!(normalize_url_with_home("https://limestart.cn/", home), home);
+        assert_eq!(
+            normalize_url_with_home("example.com/path", home),
+            "https://example.com/path"
+        );
+    }
 }

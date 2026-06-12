@@ -8,6 +8,8 @@
     "build": "vite build",
     "build:shared": "npm --prefix ../shared run build",
     "prepare:tauri": "npm run build:shared",
+    "check:rust": "cd src-tauri && cargo check",
+    "test:rust": "cd src-tauri && cargo test",
     "tauri": "node scripts/tauri-with-cargo.mjs",
     "tauri:dev:auto-port": "node scripts/tauri-dev-auto-port.mjs"
   },

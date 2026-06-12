@@ -3,13 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" />
     <title>DI-Viewer Control</title>
     <script type="module" src="/src/main.js"></script>
   </head>
   <body>
     <main class="app">
       <header class="top">
-        <div>
+        <div class="top-copy">
+          <span class="eyebrow">Tauri White Console</span>
           <h1 data-i18n="app.title">DI-Viewer</h1>
           <p id="status">Ready</p>
         </div>
@@ -19,56 +21,102 @@
             <option value="zh">中文</option>
             <option value="en">English</option>
           </select>
-          <button id="runDiagnosticsBtn" data-i18n="app.diagnostics">Run Diagnostics</button>
+          <button id="runDiagnosticsBtn" type="button">
+            <span class="btn-label" data-i18n="app.diagnostics">Run Diagnostics</span>
+          </button>
         </div>
       </header>
 
       <section class="card">
-        <h2 data-i18n="panel.window">Window</h2>
-        <label for="urlInput" data-i18n="window.address">Address</label>
-        <div class="row">
+        <div class="card-head">
+          <h2 data-i18n="panel.window">Window</h2>
+          <span class="card-note">Embedded Browser</span>
+        </div>
+        <label for="urlInput" class="field-label" data-i18n="window.address">Address</label>
+        <div class="row row-search">
           <input id="urlInput" type="text" placeholder="https://limestart.cn/" />
-          <button id="goBtn" data-i18n="window.go">Go</button>
+          <button id="goBtn" type="button">
+            <span class="btn-label" data-i18n="window.go">Go</span>
+          </button>
         </div>
-        <div class="row wrap">
-          <button id="homeBtn" data-i18n="window.home">Home</button>
-          <button id="showHideBtn">Show/Hide</button>
-          <button id="insideBtn">Inside</button>
-          <button id="onTopBtn">OnTop</button>
-          <button id="sidebarBtn">Sidebar</button>
-          <button id="minBtn" data-i18n="window.minimize">Minimize</button>
-          <button id="maxBtn" data-i18n="window.maxRestore">Max/Restore</button>
-          <button id="closeBtn" class="danger" data-i18n="window.exit">Exit</button>
+        <div class="row wrap action-cluster">
+          <button id="homeBtn" type="button">
+            <span class="btn-label" data-i18n="window.home">Home</span>
+          </button>
+          <button id="showHideBtn" type="button">
+            <span class="btn-label">Show/Hide</span>
+          </button>
+          <button id="insideBtn" type="button">
+            <span class="btn-label">Inside</span>
+          </button>
+          <button id="onTopBtn" type="button">
+            <span class="btn-label">OnTop</span>
+          </button>
+          <button id="sidebarBtn" type="button">
+            <span class="btn-label">Sidebar</span>
+          </button>
+          <button id="minBtn" type="button">
+            <span class="btn-label" data-i18n="window.minimize">Minimize</span>
+          </button>
+          <button id="maxBtn" type="button">
+            <span class="btn-label" data-i18n="window.maxRestore">Max/Restore</span>
+          </button>
+          <button id="closeBtn" class="danger" type="button">
+            <span class="btn-label" data-i18n="window.exit">Exit</span>
+          </button>
         </div>
-        <div class="row">
+        <div class="row row-slider">
           <label for="opacityRange" data-i18n="window.opacity">Opacity</label>
-          <input id="opacityRange" type="range" min="0.2" max="1" step="0.05" />
-          <span id="opacityLabel">1.00</span>
+          <div class="range-shell">
+            <input id="opacityRange" type="range" min="0.2" max="1" step="0.05" />
+          </div>
+          <span id="opacityLabel" class="value-pill">1.00</span>
         </div>
       </section>
 
       <section class="card">
-        <h2 data-i18n="panel.media">Media</h2>
-        <div class="row wrap">
-          <button data-action="toggle_play_pause" data-i18n="media.playPause">Play/Pause</button>
-          <button data-action="video_backward" data-i18n="media.backward">-5s</button>
-          <button data-action="video_forward" data-i18n="media.forward">+5s</button>
-          <button data-action="request_full_screen" data-i18n="media.fullscreen">Fullscreen</button>
+        <div class="card-head">
+          <h2 data-i18n="panel.media">Media</h2>
+          <span class="card-note">Playback</span>
+        </div>
+        <div class="row wrap action-cluster media-cluster">
+          <button type="button" data-action="toggle_play_pause">
+            <span class="btn-label" data-i18n="media.playPause">Play/Pause</span>
+          </button>
+          <button type="button" data-action="video_backward">
+            <span class="btn-label" data-i18n="media.backward">-5s</span>
+          </button>
+          <button type="button" data-action="video_forward">
+            <span class="btn-label" data-i18n="media.forward">+5s</span>
+          </button>
+          <button type="button" data-action="request_full_screen">
+            <span class="btn-label" data-i18n="media.fullscreen">Fullscreen</span>
+          </button>
         </div>
       </section>
 
       <section class="card">
-        <h2 data-i18n="panel.shortcuts">Shortcuts</h2>
+        <div class="card-head">
+          <h2 data-i18n="panel.shortcuts">Shortcuts</h2>
+          <span class="card-note">Global Keys</span>
+        </div>
         <p class="hint" data-i18n="shortcuts.hint">Format examples: Alt+Space, Ctrl+Q, Backquote.</p>
         <div id="hotkeyForm" class="grid"></div>
-        <div class="row wrap">
-          <button id="saveHotkeysBtn" data-i18n="shortcuts.save">Save Hotkeys</button>
-          <button id="resetHotkeysBtn" data-i18n="shortcuts.reset">Reset</button>
+        <div class="row wrap action-cluster short-actions">
+          <button id="saveHotkeysBtn" type="button">
+            <span class="btn-label" data-i18n="shortcuts.save">Save Hotkeys</span>
+          </button>
+          <button id="resetHotkeysBtn" type="button">
+            <span class="btn-label" data-i18n="shortcuts.reset">Reset</span>
+          </button>
         </div>
       </section>
 
       <section class="card">
-        <h2 data-i18n="panel.diagnostics">Diagnostics</h2>
+        <div class="card-head">
+          <h2 data-i18n="panel.diagnostics">Diagnostics</h2>
+          <span class="card-note">Runtime Check</span>
+        </div>
         <p class="hint" data-i18n="diagnostics.hint">Checks button actions, opacity, and hotkey registration.</p>
         <ul id="diagnosticsList" class="diag-list"></ul>
       </section>

@@ -1,6 +1,7 @@
 import type { DockColor, FrontendState, HostSnapshot, HotkeyConfig, TabSessionSnapshot } from '../types';
 
 type BridgeFn = (...args: any[]) => unknown;
+type BridgeSource = 'tauri' | 'pywebview' | 'qwebchannel' | 'mock' | 'external';
 
 declare global {
   interface Window {
@@ -15,6 +16,8 @@ declare global {
     __TAURI_INTERNALS__?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
     __diviewer_bridge_ready__?: Promise<Record<string, BridgeFn>>;
     __diviewer_bridge?: Record<string, BridgeFn>;
+    __DIVIEWER_ALLOW_MOCK_BRIDGE__?: boolean;
+    __diviewer_bridge_source__?: BridgeSource;
   }
 }
 
@@ -218,21 +221,34 @@ function normalizeBridge(bridge: Record<string, BridgeFn>) {
   return bridge;
 }
 
+function shouldUseMockBridge(): boolean {
+  if (window.__DIVIEWER_ALLOW_MOCK_BRIDGE__ === true) return true;
+  const hostname = window.location.hostname;
+  return Boolean(import.meta.env.DEV && (hostname === 'localhost' || hostname === '127.0.0.1'));
+}
+
+function installBridge(source: BridgeSource, bridge: Record<string, BridgeFn>) {
+  window.bridge = bridge;
+  window.__diviewer_bridge = bridge;
+  window.__diviewer_bridge_source__ = source;
+  return bridge;
+}
+
 async function resolveBridge(): Promise<Record<string, BridgeFn>> {
   if (isBridgeUsable(window.__diviewer_bridge)) {
+    window.__diviewer_bridge_source__ ??= 'external';
     return normalizeBridge(window.__diviewer_bridge);
   }
 
   if (isBridgeUsable(window.bridge)) {
+    window.__diviewer_bridge_source__ ??= 'external';
     return normalizeBridge(window.bridge);
   }
 
   const tauriInvoke = window.__TAURI__?.core?.invoke ?? window.__TAURI_INTERNALS__?.invoke;
   if (typeof tauriInvoke === 'function') {
     const bridge = buildTauriBridge((cmd, args) => tauriInvoke(cmd, args));
-    window.bridge = bridge;
-    window.__diviewer_bridge = bridge;
-    return bridge;
+    return installBridge('tauri', bridge);
   }
 
   if (window.__diviewer_bridge_ready__) return window.__diviewer_bridge_ready__;
@@ -241,19 +257,20 @@ async function resolveBridge(): Promise<Record<string, BridgeFn>> {
     const pyCall = window.pywebview?.api?.call;
     if (typeof pyCall === 'function') {
       const bridge = buildPyWebviewBridge((name, args) => pyCall(name, args));
-      window.bridge = bridge;
-      window.__diviewer_bridge = bridge;
-      resolve(bridge);
+      resolve(installBridge('pywebview', bridge));
       return;
     }
 
     if (typeof window.QWebChannel === 'function' && window.qt?.webChannelTransport) {
       new window.QWebChannel(window.qt.webChannelTransport, (channel) => {
         const bridge = normalizeBridge((channel.objects?.bridge ?? {}) as Record<string, BridgeFn>);
-        window.bridge = bridge;
-        resolve(bridge);
+        resolve(installBridge('qwebchannel', bridge));
       });
       return;
+    }
+
+    if (!shouldUseMockBridge()) {
+      throw new Error('DI-Viewer host bridge is unavailable');
     }
 
     const fallback = {
@@ -262,8 +279,7 @@ async function resolveBridge(): Promise<Record<string, BridgeFn>> {
       get_dock_color: async () => defaultDockColor,
       get_ui_language: async () => 'zh'
     };
-    window.bridge = fallback;
-    resolve(fallback);
+    resolve(installBridge('mock', fallback));
   });
 
   return window.__diviewer_bridge_ready__;
@@ -295,9 +311,12 @@ export const hostBridge = {
     const [state, tabs, dockColor] = await Promise.all([
       this.getState(),
       this.getTabs(),
-      this.getDockColor().catch(() => defaultDockColor)
+      this.getDockColor()
     ]);
     return { state, tabs, dockColor };
+  },
+  getBridgeSource(): BridgeSource | undefined {
+    return window.__diviewer_bridge_source__;
   },
   async getUiLanguage(): Promise<'zh' | 'en'> {
     const lang = String(await callBridge<unknown>('get_ui_language')).toLowerCase();

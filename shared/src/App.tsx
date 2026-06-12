@@ -46,11 +46,15 @@ const GITHUB_REPO_URL = 'https://github.com/yyin9116/DI-Viewer';
 const I18N = {
   zh: {
     newTab: '\u65b0\u6807\u7b7e\u9875',
-    insideModeHint: '\u5df2\u8fdb\u5165\u70b9\u51fb\u7a7f\u900f\uff0c\u6309 {key} \u9000\u51fa\u7a7f\u900f'
+    insideModeHint: '\u5df2\u8fdb\u5165\u70b9\u51fb\u7a7f\u900f\uff0c\u6309 {key} \u9000\u51fa\u7a7f\u900f',
+    bridgeErrorTitle: '\u63a7\u5236\u6865\u63a5\u4e0d\u53ef\u7528',
+    bridgeErrorBody: '\u5de6\u4fa7\u63a7\u5236\u53ef\u80fd\u65e0\u6cd5\u540c\u6b65\u7a97\u53e3\u72b6\u6001\u3002\u8bf7\u91cd\u542f DI-Viewer\uff0c\u6216\u6253\u5f00\u8fd0\u884c\u8bca\u65ad\u67e5\u770b\u8be6\u60c5\u3002'
   },
   en: {
     newTab: 'New Tab',
-    insideModeHint: 'Click-through enabled, press {key} to disable'
+    insideModeHint: 'Click-through enabled, press {key} to disable',
+    bridgeErrorTitle: 'Control bridge unavailable',
+    bridgeErrorBody: 'The sidebar may not sync with the window state. Restart DI-Viewer or open diagnostics for details.'
   }
 } as const;
 export default function App() {
@@ -64,6 +68,7 @@ export default function App() {
   const [tabHistoryState, setTabHistoryState] = useState<Record<string, TabHistoryState>>({});
   const [uiLang, setUiLang] = useState<UILang>('zh');
   const [diagMessage, setDiagMessage] = useState<string | null>(null);
+  const [bridgeError, setBridgeError] = useState<string | null>(null);
   const [isBridgeLogVisible, setIsBridgeLogVisible] = useState(false);
   const [logLines, setLogLines] = useState<string[]>([]);
   const diagOnceRef = useRef<Set<string>>(new Set());
@@ -122,11 +127,17 @@ export default function App() {
     };
   }, [tabs, activeTabId, snapshot.state.lastUrl, uiLang]);
   const syncSnapshot = async () => {
-    const next = await hostBridge.getSnapshot().catch(() => null);
-    if (!next) return;
-    setSnapshot(next);
-    const inferred = String(next.state.uiLang || '').toLowerCase();
-    setUiLang(inferred.startsWith('en') ? 'en' : 'zh');
+    try {
+      const next = await hostBridge.getSnapshot();
+      setBridgeError(null);
+      setSnapshot(next);
+      const inferred = String(next.state.uiLang || '').toLowerCase();
+      setUiLang(inferred.startsWith('en') ? 'en' : 'zh');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setBridgeError(message);
+      pushLog(`sync:error:${message}`);
+    }
   };
   const showDiagOnce = (key: string, message: string) => {
     if (diagOnceRef.current.has(key)) return;
@@ -147,11 +158,15 @@ export default function App() {
       try {
         const next = await hostBridge.getSnapshot();
         if (!mounted) return;
+        setBridgeError(null);
         setSnapshot(next);
         const inferred = String(next.state.uiLang || '').toLowerCase();
         setUiLang(inferred.startsWith('en') ? 'en' : 'zh');
-      } catch {
-        // ignore bridge failures in preview mode
+      } catch (error) {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setBridgeError(message);
+        pushLog(`sync:error:${message}`);
       }
     };
     const triggerSync = () => {
@@ -173,8 +188,10 @@ export default function App() {
           return `${ts} ${source}:${action}${detail ? `:${detail}` : ''}`.trim();
         });
         setLogLines(lines);
-      } catch {
-        // ignore
+      } catch (error) {
+        if (!mounted) return;
+        const message = error instanceof Error ? error.message : String(error);
+        pushLog(`logs:error:${message}`);
       }
     }, 700);
     window.addEventListener('diviewer:sync', triggerSync);
@@ -259,12 +276,16 @@ export default function App() {
         pushLog(`${label}:ok`);
       }
     } catch {
+      let message = '';
+      if (label) {
+        message = timedOut ? 'bridge timeout' : `${label} failed`;
+        setBridgeError(message);
+      }
       if (label) {
         const suffix = timedOut ? 'timeout' : 'error';
         showDiagOnce(`${label}-${suffix}`, `${label}:${suffix}`);
         pushLog(`${label}:${suffix}`);
       }
-      // keep UI responsive even if one host call stalls
     }
     void syncSnapshot();
   };
@@ -372,6 +393,13 @@ export default function App() {
           {diagMessage && (
             <div className="pointer-events-none fixed bottom-3 right-3 z-[2147483647] rounded-xl border border-slate-200/70 bg-white/80 px-3 py-2 text-xs font-mono text-slate-700 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/80 dark:text-slate-200">
               {diagMessage}
+            </div>
+          )}
+          {bridgeError && (
+            <div className="pointer-events-auto fixed right-3 top-3 z-[2147483647] max-w-[360px] rounded-2xl border border-rose-200/80 bg-white/95 p-3 text-sm text-slate-700 shadow-lg shadow-rose-950/10 backdrop-blur dark:border-rose-900/70 dark:bg-zinc-950/95 dark:text-slate-200">
+              <div className="font-semibold text-rose-700 dark:text-rose-300">{I18N[uiLang].bridgeErrorTitle}</div>
+              <div className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">{I18N[uiLang].bridgeErrorBody}</div>
+              <div className="mt-2 rounded-lg bg-rose-50 px-2 py-1 font-mono text-[11px] text-rose-700 dark:bg-rose-950/40 dark:text-rose-200">{bridgeError}</div>
             </div>
           )}
           {isBridgeLogVisible && logLines.length > 0 && (
