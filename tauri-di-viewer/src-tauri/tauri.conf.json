@@ -21,7 +21,8 @@
   "bundle": {
     "active": true,
     "resources": [
-      "resources/lucid-start-page"
+      "resources/lucid-start-page",
+      "../../shared/dist"
     ],
     "targets": [
       "nsis",

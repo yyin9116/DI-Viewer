@@ -868,39 +868,6 @@ fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
     shadow.appendChild(style);
   }
 
-  const ensureShellInsetStyle = () => {
-    if (isTrustedStartPage()) return;
-    const styleId = '__diviewer_shell_inset__';
-    if (document.getElementById(styleId)) return;
-    const style = document.createElement('style');
-    style.id = styleId;
-    style.textContent = `:root[data-diviewer-shell="open"] body {
-  padding: 128px 18px 24px 104px !important;
-}
-@media (max-width: 680px) {
-  :root[data-diviewer-shell="open"] body {
-    padding: 116px 12px 16px 88px !important;
-  }
-}`;
-    (document.head || document.documentElement).appendChild(style);
-  };
-
-  const syncShellInset = () => {
-    if (isTrustedStartPage()) return;
-    const host = document.getElementById('__diviewer_shared_root__');
-    const shadowOpen = host && host.shadowRoot ? host.shadowRoot.querySelector('.diviewer-host-root')?.getAttribute('data-sidebar-visible') : null;
-    const hostOpen = host ? host.getAttribute('data-sidebar-visible') : null;
-    const open = (shadowOpen ?? hostOpen ?? 'true') !== 'false';
-    document.documentElement.setAttribute('data-diviewer-shell', open ? 'open' : 'closed');
-  };
-
-  if (!window.__DIVIEWER_SHELL_INSET__) {
-    window.__DIVIEWER_SHELL_INSET__ = true;
-    ensureShellInsetStyle();
-    syncShellInset();
-    window.addEventListener('diviewer:sync', syncShellInset);
-  }
-
   if (!window.__DIVIEWER_SHARED_BOOTSTRAPPED__) {
     window.__DIVIEWER_SHARED_BOOTSTRAPPED__ = true;
     __DIVIEWER_JS__
@@ -934,8 +901,50 @@ fn shared_shell_visibility_script(visible: bool) -> String {
 }
 
 #[allow(dead_code)]
+fn inject_shared_shell(app: &AppHandle, window: &WebviewWindow) {
+    match shared_shell_script(app) {
+        Ok(script) => {
+            if let Err(err) = window.eval(script) {
+                push_log(
+                    app,
+                    "native",
+                    "inject_shared_shell",
+                    format!("failed:{err}"),
+                );
+                return;
+            }
+        }
+        Err(err) => {
+            push_log(
+                app,
+                "native",
+                "inject_shared_shell",
+                format!("missing_assets:{err}"),
+            );
+            return;
+        }
+    }
+
+    let visible = app
+        .state::<AppState>()
+        .sidebar_visible
+        .load(Ordering::SeqCst);
+    if let Err(err) = window.eval(shared_shell_visibility_script(visible)) {
+        push_log(
+            app,
+            "native",
+            "sync_shared_shell_visibility",
+            format!("failed:{err}"),
+        );
+    }
+}
+
 #[allow(dead_code)]
-fn refresh_browser_injected_scripts_for_label(_app: &AppHandle, _label: &str) {}
+fn refresh_browser_injected_scripts_for_label(app: &AppHandle, label: &str) {
+    if let Some(window) = app.get_webview_window(label) {
+        inject_shared_shell(app, &window);
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn apply_window_effects(
@@ -1591,35 +1600,13 @@ fn create_browser_tab_window(
             tauri::webview::NewWindowResponse::Deny
         })
         .on_page_load(move |window, _payload| {
-            match shared_shell_script(&app_for_load) {
-                Ok(script) => {
-                    if let Err(err) = window.eval(script) {
-                        push_log(
-                            &app_for_load,
-                            "native",
-                            "inject_shared_shell",
-                            format!("failed:{err}"),
-                        );
-                    }
-                }
-                Err(err) => {
-                    push_log(
-                        &app_for_load,
-                        "native",
-                        "inject_shared_shell",
-                        format!("missing_assets:{err}"),
-                    );
-                }
-            }
-            let visible = app_for_load
-                .state::<AppState>()
-                .sidebar_visible
-                .load(Ordering::SeqCst);
-            let _ = window.eval(shared_shell_visibility_script(visible));
+            inject_shared_shell(&app_for_load, &window);
             let _ = sync_tab_from_browser_label(&app_for_load, &label_for_load);
         })
         .build()
         .map_err(|err| format!("Create browser window failed: {err}"))?;
+
+    inject_shared_shell(app, &browser);
 
     if initial.window_maximized {
         let _ = browser.maximize();
