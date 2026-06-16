@@ -1,6 +1,12 @@
 {
   "identifier": "default",
-  "description": "Default capability for trusted DI-Viewer local webviews only.",
+  "description": "Default capability for DI-Viewer control and embedded browser shell webviews.",
+  "remote": {
+    "urls": [
+      "http://*",
+      "https://*"
+    ]
+  },
   "windows": [
     "main",
     "browser*"

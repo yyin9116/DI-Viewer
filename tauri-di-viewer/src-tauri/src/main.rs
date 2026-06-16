@@ -901,48 +901,20 @@ fn shared_shell_visibility_script(visible: bool) -> String {
 }
 
 #[allow(dead_code)]
-fn inject_shared_shell(app: &AppHandle, window: &WebviewWindow) {
-    match shared_shell_script(app) {
-        Ok(script) => {
-            if let Err(err) = window.eval(script) {
-                push_log(
-                    app,
-                    "native",
-                    "inject_shared_shell",
-                    format!("failed:{err}"),
-                );
-                return;
-            }
-        }
-        Err(err) => {
+fn refresh_browser_injected_scripts_for_label(app: &AppHandle, label: &str) {
+    if let Some(window) = app.get_webview_window(label) {
+        let visible = app
+            .state::<AppState>()
+            .sidebar_visible
+            .load(Ordering::SeqCst);
+        if let Err(err) = window.eval(shared_shell_visibility_script(visible)) {
             push_log(
                 app,
                 "native",
-                "inject_shared_shell",
-                format!("missing_assets:{err}"),
+                "sync_shared_shell_visibility",
+                format!("failed:{err}"),
             );
-            return;
         }
-    }
-
-    let visible = app
-        .state::<AppState>()
-        .sidebar_visible
-        .load(Ordering::SeqCst);
-    if let Err(err) = window.eval(shared_shell_visibility_script(visible)) {
-        push_log(
-            app,
-            "native",
-            "sync_shared_shell_visibility",
-            format!("failed:{err}"),
-        );
-    }
-}
-
-#[allow(dead_code)]
-fn refresh_browser_injected_scripts_for_label(app: &AppHandle, label: &str) {
-    if let Some(window) = app.get_webview_window(label) {
-        inject_shared_shell(app, &window);
     }
 }
 
@@ -1579,6 +1551,8 @@ fn create_browser_tab_window(
     let label_for_load = label.to_string();
     let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
 
+    let shell_script = shared_shell_script(app)?;
+
     let browser = WebviewWindowBuilder::new(app, label.to_string(), WebviewUrl::External(url))
         .title(ui_text(
             ui_lang_zh,
@@ -1592,6 +1566,7 @@ fn create_browser_tab_window(
         .always_on_top(initial.window_on_top)
         .user_agent(DESKTOP_BROWSER_USER_AGENT)
         .visible(visible)
+        .initialization_script(shell_script)
         .on_navigation(|_url| true)
         .on_new_window(move |new_url, _features| {
             if let Some(browser) = app_for_popup.get_webview_window(&label_for_popup) {
@@ -1600,13 +1575,22 @@ fn create_browser_tab_window(
             tauri::webview::NewWindowResponse::Deny
         })
         .on_page_load(move |window, _payload| {
-            inject_shared_shell(&app_for_load, &window);
+            let visible = app_for_load
+                .state::<AppState>()
+                .sidebar_visible
+                .load(Ordering::SeqCst);
+            if let Err(err) = window.eval(shared_shell_visibility_script(visible)) {
+                push_log(
+                    &app_for_load,
+                    "native",
+                    "sync_shared_shell_visibility",
+                    format!("failed:{err}"),
+                );
+            }
             let _ = sync_tab_from_browser_label(&app_for_load, &label_for_load);
         })
         .build()
         .map_err(|err| format!("Create browser window failed: {err}"))?;
-
-    inject_shared_shell(app, &browser);
 
     if initial.window_maximized {
         let _ = browser.maximize();
