@@ -37,10 +37,21 @@
       min-height: 100vh;
       padding: 16px 12px 20px;
       overflow: auto;
+      /* Hide scrollbars (content is sized to fit the window); scrolling
+         still works via wheel/drag if the window is smaller than content. */
+      scrollbar-width: none;
+      -ms-overflow-style: none;
       font: 16px/1.5 "Segoe UI", system-ui, sans-serif;
       color: var(--text);
       background: radial-gradient(circle at top, rgba(255, 255, 255, 0.26), transparent 36%), var(--bg);
       transition: padding 0.28s ease, background 0.28s ease;
+    }
+
+    body::-webkit-scrollbar,
+    html::-webkit-scrollbar {
+      display: none;
+      width: 0;
+      height: 0;
     }
 
     body.shell-open {

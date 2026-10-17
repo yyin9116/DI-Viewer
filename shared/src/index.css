@@ -2,6 +2,24 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/*
+ * Design tokens — mirrors the Ardot file "DI-Viewer Design System"
+ * (fileId 737378809166340). Semantic aliases over the Tailwind palette;
+ * change both sides together.
+ */
+@theme {
+  /* Brand / interaction (teal) */
+  --color-brand-300: #5eead4; /* dark-mode accent text */
+  --color-brand-400: #2dd4bf; /* hover */
+  --color-brand-500: #14b8a6; /* primary interaction */
+  --color-brand-700: #0f766e; /* light-mode accent text */
+
+  /* Danger / recording (rose) */
+  --color-danger-200: #fecdd3; /* light tag surface */
+  --color-danger-300: #fda4af; /* dark-mode danger text */
+  --color-danger-700: #be123c; /* record button / light danger text */
+}
+
 :root {
   color-scheme: light;
   font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;

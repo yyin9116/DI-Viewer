@@ -22,7 +22,8 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl, WebviewWindow,
+    AppHandle, Manager, LogicalSize, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
+    WebviewWindow,
     WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -39,6 +40,21 @@ const LOCAL_HOME_RESOURCE: &str = "lucid-start-page/index.html";
 const MAX_TAB_SESSIONS: usize = 20;
 const SNAP_DISTANCE: i32 = 10;
 const SNAP_DEBOUNCE_MS: u64 = 180;
+const RESIZE_DEBOUNCE_MS: u64 = 250;
+/// Windows reports (-32000, -32000) for minimized/iconic windows; anything
+/// at or below this coordinate is treated as a minimized-window artifact.
+const MIN_VISIBLE_COORD: i32 = -30000;
+/// WebView2 must launch with the GPU sandbox disabled on some machines
+/// (e.g. dual-AMD-GPU setups): otherwise the GPU process hangs and Windows
+/// pops "msedgewebview2 has stopped working" on every launch.
+/// NOTE: additional_browser_args REPLACES wry's defaults, so the default
+/// disabled-features list must be restated here.
+const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-sandbox --no-sandbox";
+/// Logical inner size that fits the start page without scrolling
+/// (measured via CDP: content needs ~759px height at its 1180px max wrap
+/// width; 1220x760 leaves the wrap fully expanded with a little slack).
+const START_PAGE_FIT_WIDTH: f64 = 1220.0;
+const START_PAGE_FIT_HEIGHT: f64 = 760.0;
 const SHARED_DIST_CSS_PATH: &str = "assets/app.css";
 const SHARED_DIST_JS_PATH: &str = "assets/app.js";
 const DESKTOP_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
@@ -180,6 +196,7 @@ struct AppState {
     closing_windows: Mutex<HashSet<String>>,
     snapping: AtomicBool,
     move_seq: AtomicU64,
+    resize_seq: AtomicU64,
     sidebar_visible: AtomicBool,
     log_store: Mutex<Vec<LogEntry>>,
 }
@@ -578,6 +595,7 @@ fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
                 "DI-Viewer Control",
             ))
             .inner_size(760.0, 940.0)
+            .additional_browser_args(WEBVIEW_BROWSER_ARGS)
             .resizable(true)
             .build()
             .map_err(|err| format!("Create control window failed: {err}"))?;
@@ -642,7 +660,7 @@ fn js_for_action(action: &str) -> Option<&'static str> {
             "(() => { const v = document.querySelector('video'); if (!v) return; if (v.paused) { v.play(); } else { v.pause(); } })();",
         ),
         "toggle_recording" => Some(
-            "(() => { const candidates = ['button[aria-label*=\"??\"]','button[title*=\"??\"]','button[aria-label*=\"record\" i]','button[title*=\"record\" i]','[data-action*=\"record\" i]']; for (const sel of candidates) { const node = document.querySelector(sel); if (node && typeof node.click === 'function') { node.click(); return; } } const ev = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', bubbles: true }); document.dispatchEvent(ev); })();",
+            "(() => { const candidates = ['button[aria-label*=\"录制\"]','button[title*=\"录制\"]','button[aria-label*=\"record\" i]','button[title*=\"record\" i]','[data-action*=\"record\" i]']; for (const sel of candidates) { const node = document.querySelector(sel); if (node && typeof node.click === 'function') { node.click(); return; } } const ev = new KeyboardEvent('keydown', { key: 'r', code: 'KeyR', bubbles: true }); document.dispatchEvent(ev); })();",
         ),
         "video_backward" => Some(
             "(() => { const v = document.querySelector('video'); if (v) { v.currentTime = Math.max(0, v.currentTime - 5); } })();",
@@ -1018,12 +1036,29 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
     }
 
     let browser = browser_window_by_label(app, label)?;
+    // Never persist while minimized: Windows reports the iconic rect
+    // (-32000, -32000, 0x0), which would poison the saved geometry and
+    // make the next launch restore the window off-screen.
+    if browser.is_minimized().unwrap_or(false) {
+        return Ok(());
+    }
     let position = browser
         .outer_position()
         .map_err(|err| format!("Read position failed: {err}"))?;
     let inner = browser
         .inner_size()
         .map_err(|err| format!("Read inner size failed: {err}"))?;
+    if position.x <= MIN_VISIBLE_COORD
+        || position.y <= MIN_VISIBLE_COORD
+        || inner.width == 0
+        || inner.height == 0
+    {
+        return Ok(());
+    }
+    // Builder APIs (inner_size/position) work in logical pixels, so the
+    // persisted geometry must be logical too; otherwise every relaunch on
+    // a non-100%-scaled display grows the window by the scale factor.
+    let scale = browser.scale_factor().unwrap_or(1.0).max(0.01);
     let visible = browser.is_visible().unwrap_or(true);
     let maximized = browser.is_maximized().unwrap_or(false);
     let state = app.state::<AppState>();
@@ -1038,13 +1073,13 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
             current_url.clone()
         };
         if !persist.window_position_locked {
-            persist.window_start_x = position.x as f64;
-            persist.window_start_y = position.y as f64;
+            persist.window_start_x = position.x as f64 / scale;
+            persist.window_start_y = position.y as f64 / scale;
         }
         // Persist inner size because create uses .inner_size(...).
         // Using outer size here causes cumulative growth each tab/window cycle.
-        persist.window_width = inner.width as f64;
-        persist.window_height = inner.height as f64;
+        persist.window_width = (inner.width as f64 / scale).round();
+        persist.window_height = (inner.height as f64 / scale).round();
         persist.window_visible = visible;
         persist.window_maximized = maximized;
     })?;
@@ -1191,6 +1226,7 @@ fn toggle_position_lock_impl(app: &AppHandle) -> AppResult<bool> {
     let position = browser
         .outer_position()
         .map_err(|err| format!("Read position failed: {err}"))?;
+    let scale = browser.scale_factor().unwrap_or(1.0).max(0.01);
     let state = app.state::<AppState>();
     let next = {
         let locked = state
@@ -1202,8 +1238,8 @@ fn toggle_position_lock_impl(app: &AppHandle) -> AppResult<bool> {
     update_persist(&state, |persist| {
         persist.window_position_locked = next;
         if next {
-            persist.window_start_x = position.x as f64;
-            persist.window_start_y = position.y as f64;
+            persist.window_start_x = position.x as f64 / scale;
+            persist.window_start_y = position.y as f64 / scale;
         }
     })?;
     Ok(next)
@@ -1237,21 +1273,60 @@ fn resize_to_ratio_impl(app: &AppHandle, ratio: f64) -> AppResult<f64> {
         .map_err(|err| format!("Set position failed: {err}"))?;
 
     let state = app.state::<AppState>();
+    let scale = browser.scale_factor().unwrap_or(1.0).max(0.01);
     let current_url = browser
         .url()
         .map(|u| u.to_string())
         .unwrap_or_else(|_| state.home_url.clone());
     update_persist(&state, |persist| {
-        persist.window_start_x = x as f64;
-        persist.window_start_y = y as f64;
-        persist.window_width = width as f64;
-        persist.window_height = height as f64;
+        persist.window_start_x = x as f64 / scale;
+        persist.window_start_y = y as f64 / scale;
+        persist.window_width = (width as f64 / scale).round();
+        persist.window_height = (height as f64 / scale).round();
         if !current_url.trim().is_empty() {
             persist.last_url = current_url.clone();
         }
     })?;
 
     Ok(ratio)
+}
+
+fn is_start_page_url(url: &str) -> bool {
+    url.contains("lucid-start-page")
+}
+
+/// Resize the browser window to fit the start page (no scrolling) and
+/// center it on the current monitor, persisting the resulting logical
+/// geometry so the next non-home launch restores sensibly.
+fn fit_window_to_start_page(app: &AppHandle) -> AppResult<()> {
+    let browser = browser_window(app)?;
+    let scale = browser.scale_factor().unwrap_or(1.0).max(0.01);
+    browser
+        .set_size(Size::Logical(LogicalSize::new(
+            START_PAGE_FIT_WIDTH,
+            START_PAGE_FIT_HEIGHT,
+        )))
+        .map_err(|err| format!("Set start page size failed: {err}"))?;
+    // Give the window manager a moment to apply the resize before the
+    // outer rect is read for centering.
+    thread::sleep(Duration::from_millis(150));
+    if let Ok(Some(monitor)) = browser.current_monitor() {
+        if let Ok(outer) = browser.outer_size() {
+            let x = monitor.position().x
+                + (((monitor.size().width as i32 - outer.width as i32) / 2).max(0));
+            let y = monitor.position().y
+                + (((monitor.size().height as i32 - outer.height as i32) / 2).max(0));
+            let _ = browser.set_position(Position::Physical(PhysicalPosition::new(x, y)));
+            let state = app.state::<AppState>();
+            update_persist(&state, |persist| {
+                persist.window_start_x = x as f64 / scale;
+                persist.window_start_y = y as f64 / scale;
+                persist.window_width = START_PAGE_FIT_WIDTH;
+                persist.window_height = START_PAGE_FIT_HEIGHT;
+            })?;
+        }
+    }
+    Ok(())
 }
 
 fn bookmarks_snapshot(state: &AppState) -> AppResult<Vec<BookmarkItem>> {
@@ -1561,6 +1636,7 @@ fn create_browser_tab_window(
         ))
         .inner_size(initial.window_width, initial.window_height)
         .min_inner_size(600.0, 320.0)
+        .additional_browser_args(WEBVIEW_BROWSER_ARGS)
         .position(initial.window_start_x, initial.window_start_y)
         .resizable(true)
         .always_on_top(initial.window_on_top)
@@ -1642,7 +1718,20 @@ fn create_browser_tab_window(
             });
         }
         WindowEvent::Resized(_) => {
-            let _ = persist_browser_state_for_label(&app_handle, &label_for_event, false);
+            // Resized fires continuously while dragging edges; debounce the
+            // disk write instead of persisting on every tick.
+            let state = app_handle.state::<AppState>();
+            let seq = state.resize_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let app_for_resize = app_handle.clone();
+            let label_for_resize = label_for_event.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(RESIZE_DEBOUNCE_MS));
+                let state = app_for_resize.state::<AppState>();
+                if state.resize_seq.load(Ordering::SeqCst) == seq {
+                    let _ =
+                        persist_browser_state_for_label(&app_for_resize, &label_for_resize, false);
+                }
+            });
         }
         WindowEvent::CloseRequested { api, .. } => {
             let allow_close = {
@@ -2345,12 +2434,35 @@ pub fn run() {
                 closing_windows: Mutex::new(HashSet::new()),
                 snapping: AtomicBool::new(false),
                 move_seq: AtomicU64::new(0),
+                resize_seq: AtomicU64::new(0),
                 sidebar_visible: AtomicBool::new(true),
                 log_store: Mutex::new(Vec::new()),
             });
 
             create_browser_window(&app.handle().clone()).map_err(std::io::Error::other)?;
-            let _ = resize_to_ratio_impl(&app.handle().clone(), 0.5);
+            // When the app starts on the start page, fit the window to the
+            // page size and center it on the monitor; otherwise respect the
+            // persisted geometry and only fall back to the screen-50% default
+            // when the saved size is missing/corrupt (below min_inner_size).
+            {
+                let state = app.state::<AppState>();
+                let (on_home, geometry_ok) = {
+                    let locked = state
+                        .data
+                        .lock()
+                        .map_err(|_| std::io::Error::other("State lock poisoned"))?;
+                    let persist = &locked.persist;
+                    (
+                        is_start_page_url(&persist.last_url),
+                        persist.window_width >= 600.0 && persist.window_height >= 320.0,
+                    )
+                };
+                if on_home {
+                    let _ = fit_window_to_start_page(&app.handle().clone());
+                } else if !geometry_ok {
+                    let _ = resize_to_ratio_impl(&app.handle().clone(), 0.5);
+                }
+            }
             setup_tray(&app.handle().clone()).map_err(std::io::Error::other)?;
 
             {
