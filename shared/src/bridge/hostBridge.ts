@@ -22,15 +22,15 @@ declare global {
 }
 
 const defaultHotkeys: HotkeyConfig = {
-  togglePlayPause: 'Backquote',
-  toggleRecording: 'R',
-  toggleShowHide: '0',
-  insideMode: 'P',
-  videoBackward: '5',
-  videoForward: '6',
-  decreaseOpacity: '7',
-  increaseOpacity: '8',
-  requestFullScreen: 'O',
+  togglePlayPause: 'Ctrl+Alt+Space',
+  toggleRecording: 'Ctrl+Alt+R',
+  toggleShowHide: 'Ctrl+Alt+H',
+  insideMode: 'Ctrl+Alt+P',
+  videoBackward: 'Ctrl+Alt+J',
+  videoForward: 'Ctrl+Alt+L',
+  decreaseOpacity: 'Ctrl+Alt+9',
+  increaseOpacity: 'Ctrl+Alt+0',
+  requestFullScreen: 'Ctrl+Alt+F',
   closeWindow: 'Ctrl+Q'
 };
 
@@ -42,6 +42,7 @@ const defaultState: FrontendState = {
   visible: true,
   maximized: false,
   positionLocked: false,
+  hotkeysEnabled: true,
   sidebarVisible: true,
   uiLang: 'zh',
   bookmarks: [],
@@ -86,6 +87,7 @@ function normalizeState(raw: unknown): FrontendState {
     visible: Boolean(state.visible ?? true),
     maximized: Boolean(state.maximized ?? false),
     positionLocked: Boolean(state.positionLocked ?? state.position_locked ?? false),
+    hotkeysEnabled: Boolean(state.hotkeysEnabled ?? state.hotkeys_enabled ?? true),
     sidebarVisible: Boolean(state.sidebarVisible ?? state.sidebar_visible ?? true),
     uiLang: String(state.uiLang ?? state.ui_lang ?? 'zh'),
     bookmarks: Array.isArray(state.bookmarks)
@@ -152,6 +154,8 @@ function buildPyWebviewBridge(call: (name: string, args?: unknown) => Promise<un
     save_config: (configJson: string) => call('save_config', [configJson]),
     get_config: () => call('get_config'),
     reset_config: () => call('reset_config'),
+    set_hotkeys_enabled: (enabled: boolean) => call('set_hotkeys_enabled', [enabled]),
+    rescue_window: () => call('rescue_window'),
     video_action: (action: string) => call('video_action', [action]),
     get_ui_language: () => call('get_ui_language'),
     set_ui_language: (lang: string) => call('set_ui_language', [lang]),
@@ -196,6 +200,8 @@ function buildTauriBridge(invoke: (cmd: string, args?: Record<string, unknown>) 
     save_config: (configJson: string) => invoke('save_hotkeys', { config: JSON.parse(configJson) }),
     get_config: () => invoke('get_hotkeys'),
     reset_config: () => invoke('reset_hotkeys'),
+    set_hotkeys_enabled: (enabled: boolean) => invoke('set_hotkeys_enabled', { enabled }),
+    rescue_window: () => invoke('rescue_window'),
     video_action: (action: string) => invoke('video_action', { action }),
     get_ui_language: () => invoke('get_ui_language'),
     set_ui_language: (lang: string) => invoke('set_ui_language', { lang }),
@@ -384,6 +390,12 @@ export const hostBridge = {
   },
   resetHotkeys() {
     return callBridge<HotkeyConfig>('reset_config');
+  },
+  setHotkeysEnabled(enabled: boolean) {
+    return callBridge('set_hotkeys_enabled', enabled);
+  },
+  rescueWindow() {
+    return callBridge('rescue_window');
   },
   saveBookmark(url: string, title: string) {
     return callBridge('add_bookmark', url, title);

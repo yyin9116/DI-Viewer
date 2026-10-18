@@ -81,16 +81,26 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
         animate={{
           width: isOpen ? 80 : 0,
         }}
-        transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-        className="pointer-events-auto relative h-full shrink-0 overflow-hidden border-r border-slate-200 bg-white dark:border-zinc-800 dark:bg-black z-[2147483646]"
+        transition={{ type: 'spring', damping: 30, stiffness: 320 }}
+        className="pointer-events-auto relative h-full shrink-0 overflow-hidden z-[2147483646]"
       >
+        {/* The surface is painted on the inner panel, never on the box that
+            animates 80px -> 0px: a background/border on the shrinking box
+            survives the spring as a 1-2px white sliver for a few frames. */}
         <motion.div
+          initial={false}
+          animate={{ x: isOpen ? 0 : -48, opacity: isOpen ? 1 : 0 }}
+          transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+          className="absolute inset-y-0 left-0 w-20 border-r border-chrome-line bg-chrome"
+        />
+        <motion.div
+          initial={false}
           animate={{
-            x: isOpen ? 0 : -80,
+            x: isOpen ? 0 : -20,
             opacity: isOpen ? 1 : 0
           }}
-          transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-          className="flex h-full min-w-[80px] w-20 flex-col items-center py-6 pointer-events-auto"
+          transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+          className={`relative flex h-full w-20 flex-col items-center py-6 ${isOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}
         >
           <button
             type="button"

@@ -24,6 +24,7 @@ export interface FrontendState {
   visible: boolean;
   maximized: boolean;
   positionLocked: boolean;
+  hotkeysEnabled: boolean;
   sidebarVisible: boolean;
   uiLang: string;
   bookmarks: BookmarkItem[];

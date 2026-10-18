@@ -25,6 +25,7 @@ const defaultState: FrontendState = {
   visible: true,
   maximized: false,
   positionLocked: false,
+  hotkeysEnabled: true,
   sidebarVisible: true,
   uiLang: 'zh',
   bookmarks: [],
@@ -337,6 +338,22 @@ export default function App() {
       return next;
     }, 'reset_hotkeys', 3000);
   };
+  const handleToggleHotkeysEnabled = (enabled: boolean) => {
+    setSnapshot((current) => ({
+      ...current,
+      state: { ...current.state, hotkeysEnabled: enabled }
+    }));
+    void run(() => hostBridge.setHotkeysEnabled(enabled), 'set_hotkeys_enabled', 3000);
+  };
+  const handleRescueWindow = () => {
+    setIsMenuOpen(false);
+    void run(async () => {
+      // Restore the shell's own DOM opacity too, otherwise a translucent
+      // shell keeps looking broken even after the native layer is reset.
+      await hostBridge.setShellOpacity(1);
+      return hostBridge.rescueWindow();
+    }, 'rescue_window', 3000);
+  };
   const handleBookmarkCurrent = () => {
     const url = activeTab.url?.trim();
     if (!url) return;
@@ -480,6 +497,12 @@ export default function App() {
                 onTogglePositionLock={() => void run(() => hostBridge.toggleLockPosition(), 'toggle_position_lock', 2500)}
                 isPositionLocked={snapshot.state.positionLocked}
                 onAbout={() => void run(() => hostBridge.openExternal(GITHUB_REPO_URL), 'open_about', 3000)}
+                isPinned={snapshot.state.onTop}
+                onTogglePin={() => void run(() => hostBridge.toggleOnTop(), 'toggle_on_top', 2500)}
+                isSidebarVisible={snapshot.state.sidebarVisible}
+                hotkeysEnabled={snapshot.state.hotkeysEnabled}
+                onToggleHotkeysEnabled={handleToggleHotkeysEnabled}
+                onRescueWindow={handleRescueWindow}
               />
               </>
             )}

@@ -11,17 +11,20 @@ import {
   Info,
   LogOut,
   ChevronRight,
-  ChevronLeft,
   Save,
   RotateCcw,
   Globe,
   MousePointer2,
-  Lock
+  Lock,
+  LifeBuoy,
+  Pin,
+  ShieldAlert,
+  Check
 } from 'lucide-react';
 import type { HotkeyConfig } from '../types';
 
 type UILang = 'zh' | 'en';
-type MenuView = 'main' | 'shortcuts' | 'windowPresets';
+type MenuView = 'appearance' | 'window' | 'shortcuts' | 'recovery';
 
 interface MainMenuProps {
   onClose: () => void;
@@ -41,87 +44,135 @@ interface MainMenuProps {
   isInsideMode: boolean;
   onTogglePositionLock: () => void;
   isPositionLocked: boolean;
+  isPinned: boolean;
+  onTogglePin: () => void;
+  isSidebarVisible: boolean;
+  hotkeysEnabled: boolean;
+  onToggleHotkeysEnabled: (enabled: boolean) => void;
+  onRescueWindow: () => void;
   onAbout: () => void;
 }
 
 const TEXT = {
   zh: {
-    settings: '\u8bbe\u7f6e',
-    shortcuts: '\u5feb\u6377\u952e',
-    windowOpacity: '\u7a97\u53e3\u900f\u660e\u5ea6',
-    darkMode: '\u591c\u95f4\u6a21\u5f0f',
-    language: '\u8bed\u8a00',
-    windowPreset: '\u7a97\u53e3\u9884\u8bbe',
-    windowPresetOptions: '\u7a97\u53e3\u9884\u8bbe\u9009\u9879',
-    presetHalf: '1/2 \u5c4f\u5e55',
-    presetThird: '1/3 \u5c4f\u5e55',
-    presetTwoThirds: '2/3 \u5c4f\u5e55',
-    presetThreeQuarters: '3/4 \u5c4f\u5e55',
-    sidebarMode: '\u4fa7\u8fb9\u680f\u6298\u53e0/\u5c55\u5f00',
-    insideMode: '\u7a7f\u900f\u6a21\u5f0f',
-    positionLock: '\u9501\u5b9a\u7a97\u53e3\u4f4d\u7f6e',
-    about: '\u5173\u4e8e DI-Viewer',
-    quit: '\u9000\u51fa DI-Viewer',
-    back: '\u8fd4\u56de',
-    reset: '\u91cd\u7f6e',
-    save: '\u4fdd\u5b58',
-    recording: '\u5f55\u5236\u4e2d...',
-    startRecord: '\u5f55\u5236',
-    recordingHint: '\u70b9\u51fb\u5f55\u5236\u540e\u6309\u7ec4\u5408\u952e\uff0cEsc \u53d6\u6d88',
-    keyPlaceholder: '\u6309\u952e',
-    zh: '\u4e2d\u6587',
+    settings: '设置',
+    tabs: {
+      appearance: '外观',
+      window: '窗口',
+      shortcuts: '快捷键',
+      recovery: '恢复'
+    },
+    appearance: '外观',
+    theme: '主题',
+    light: '浅色',
+    dark: '深色',
+    language: '语言',
+    zh: '中文',
     en: 'English',
-    hotkey: {
-      togglePlayPause: '\u64ad\u653e/\u6682\u505c',
-      toggleRecording: '\u5f00\u59cb/\u505c\u6b62\u5f55\u5236',
-      toggleShowHide: '\u663e\u793a/\u9690\u85cf',
-      insideMode: '\u7a7f\u900f\u6a21\u5f0f',
-      videoBackward: '\u540e\u9000\u89c6\u9891',
-      videoForward: '\u524d\u8fdb\u89c6\u9891',
-      decreaseOpacity: '\u964d\u4f4e\u900f\u660e\u5ea6',
-      increaseOpacity: '\u63d0\u9ad8\u900f\u660e\u5ea6',
-      requestFullScreen: '\u8bf7\u6c42\u5168\u5c4f',
-      closeWindow: '\u5173\u95ed\u7a97\u53e3'
-    }
+    opacity: '界面透明度',
+    opacityHint: '最低 20%。调低到看不清时，按 Ctrl+Alt+Shift+R 立刻找回窗口。',
+    windowSection: '窗口行为',
+    pinned: '窗口置顶',
+    pinnedHint: '其他窗口之上显示',
+    insideMode: '点击穿透',
+    insideHint: '鼠标事件交给下层页面，开启后只能用快捷键退出',
+    positionLock: '锁定位置',
+    positionLockHint: '禁止拖动窗口',
+    sidebar: '显示侧边栏',
+    sidebarHint: '收起后左侧仅保留展开把手',
+    presets: '窗口预设',
+    presetHalf: '1/2',
+    presetThird: '1/3',
+    presetTwoThirds: '2/3',
+    presetThreeQuarters: '3/4',
+    shortcuts: '快捷键',
+    shortcutMaster: '启用全局快捷键',
+    shortcutMasterHint: '关闭后只保留固定的找回快捷键，避免与输入法、游戏冲突',
+    shortcutTable: '按键绑定',
+    recording: '按下组合键…',
+    record: '设置',
+    cancel: 'Esc 取消',
+    modifierRequired: '需要修饰键：全局限定不能用单个字母或数字（F1–F24 除外）',
+    duplicate: '与上方绑定重复',
+    shortcutHint: '全局快捷键独立于应用焦点；单键绑定会打断任何程序的正常打字，因此必须带 Ctrl / Alt / Shift。',
+    shortcutSaved: '已保存并重新注册',
+    reset: '恢复默认',
+    save: '保存',
+    recovery: '恢复与退出',
+    rescue: '找回窗口',
+    rescuePrimary: '立即找回窗口',
+    rescueHint: '把透明度恢复到 100%、关闭点击穿透、取消最小化，并在窗口离开所有显示器时重新居中。',
+    rescueSteps: '三种进入方式',
+    rescueHotkey: '固定快捷键',
+    rescueHotkeyValue: 'Ctrl+Alt+Shift+R',
+    rescueAlways: '即使关闭了全局快捷键也生效',
+    rescueTray: '托盘菜单 / 找回窗口',
+    rescueRelaunch: '重新启动程序',
+    rescueRelaunchHint: '启动时自动复位透明度、穿透与越界位置',
+    footerVersion: '版本',
+    about: '关于项目',
+    quit: '退出 DI-Viewer',
+    pin: '置顶'
   },
   en: {
     settings: 'Settings',
-    shortcuts: 'Shortcuts',
-    windowOpacity: 'Window Opacity',
-    darkMode: 'Dark Mode',
+    tabs: {
+      appearance: 'Look',
+      window: 'Window',
+      shortcuts: 'Keys',
+      recovery: 'Recovery'
+    },
+    appearance: 'Appearance',
+    theme: 'Theme',
+    light: 'Light',
+    dark: 'Dark',
     language: 'Language',
-    windowPreset: 'Window Presets',
-    windowPresetOptions: 'Window Preset Options',
-    presetHalf: '1/2 Screen',
-    presetThird: '1/3 Screen',
-    presetTwoThirds: '2/3 Screen',
-    presetThreeQuarters: '3/4 Screen',
-    sidebarMode: 'Sidebar Collapse/Expand',
-    insideMode: 'Click-through Mode',
-    positionLock: 'Lock Window Position',
-    about: 'About DI-Viewer',
-    quit: 'Quit DI-Viewer',
-    back: 'Back',
+    zh: '中文',
+    en: 'English',
+    opacity: 'Shell opacity',
+    opacityHint: 'Floor is 20%. If it gets too faint, press Ctrl+Alt+Shift+R to bring the window back.',
+    windowSection: 'Window behaviour',
+    pinned: 'Always on top',
+    pinnedHint: 'Float above other windows',
+    insideMode: 'Click-through',
+    insideHint: 'Mouse events go to the page below; exit with the shortcut only',
+    positionLock: 'Lock position',
+    positionLockHint: 'Dragging is disabled',
+    sidebar: 'Show sidebar',
+    sidebarHint: 'Collapsed leaves only the handle',
+    presets: 'Window presets',
+    presetHalf: '1/2',
+    presetThird: '1/3',
+    presetTwoThirds: '2/3',
+    presetThreeQuarters: '3/4',
+    shortcuts: 'Shortcuts',
+    shortcutMaster: 'Enable global shortcuts',
+    shortcutMasterHint: 'Off keeps only the fixed rescue shortcut, so nothing fights your IME or games',
+    shortcutTable: 'Bindings',
+    recording: 'Press a combo…',
+    record: 'Set',
+    cancel: 'Esc to cancel',
+    modifierRequired: 'A modifier is required: global shortcuts cannot be a bare letter or digit (F1–F24 excepted)',
+    duplicate: 'Duplicate of a binding above',
+    shortcutHint: 'Global shortcuts fire regardless of focus. A bare key would swallow normal typing everywhere, so Ctrl / Alt / Shift is mandatory.',
+    shortcutSaved: 'Saved and re-registered',
     reset: 'Reset',
     save: 'Save',
-    recording: 'Recording...',
-    startRecord: 'Record',
-    recordingHint: 'Click record then press keys, Esc to cancel',
-    keyPlaceholder: 'Shortcut',
-    zh: 'Chinese',
-    en: 'English',
-    hotkey: {
-      togglePlayPause: 'Play/Pause',
-      toggleRecording: 'Start/Stop Recording',
-      toggleShowHide: 'Show/Hide',
-      insideMode: 'Click-through',
-      videoBackward: 'Video Backward',
-      videoForward: 'Video Forward',
-      decreaseOpacity: 'Decrease Opacity',
-      increaseOpacity: 'Increase Opacity',
-      requestFullScreen: 'Request Fullscreen',
-      closeWindow: 'Close App'
-    }
+    recovery: 'Recovery & exit',
+    rescue: 'Find the window',
+    rescuePrimary: 'Bring the window back',
+    rescueHint: 'Restores 100% opacity, turns click-through off, un-minimizes, and re-centers when the window is off every monitor.',
+    rescueSteps: 'Three ways in',
+    rescueHotkey: 'Fixed shortcut',
+    rescueHotkeyValue: 'Ctrl+Alt+Shift+R',
+    rescueAlways: 'Works even with global shortcuts disabled',
+    rescueTray: 'Tray menu / Restore Window',
+    rescueRelaunch: 'Relaunch the app',
+    rescueRelaunchHint: 'Startup resets opacity, click-through and off-screen geometry',
+    footerVersion: 'Version',
+    about: 'Project',
+    quit: 'Quit DI-Viewer',
+    pin: 'Pin'
   }
 } as const;
 
@@ -138,13 +189,41 @@ const hotkeyKeys: Array<keyof HotkeyConfig> = [
   'closeWindow'
 ];
 
+const HOTKEY_LABELS: Record<UILang, Record<keyof HotkeyConfig, string>> = {
+  zh: {
+    togglePlayPause: '播放 / 暂停',
+    toggleRecording: '开始 / 停止录制',
+    toggleShowHide: '显示 / 隐藏窗口',
+    insideMode: '点击穿透',
+    videoBackward: '后退 5 秒',
+    videoForward: '前进 5 秒',
+    decreaseOpacity: '降低透明度',
+    increaseOpacity: '提高透明度',
+    requestFullScreen: '请求全屏',
+    closeWindow: '退出程序'
+  },
+  en: {
+    togglePlayPause: 'Play / pause',
+    toggleRecording: 'Start / stop recording',
+    toggleShowHide: 'Show / hide window',
+    insideMode: 'Click-through',
+    videoBackward: 'Back 5 seconds',
+    videoForward: 'Forward 5 seconds',
+    decreaseOpacity: 'Decrease opacity',
+    increaseOpacity: 'Increase opacity',
+    requestFullScreen: 'Request fullscreen',
+    closeWindow: 'Quit app'
+  }
+};
 
 const MODIFIER_NAMES = new Set(['Control', 'Shift', 'Alt', 'Meta']);
+const MODIFIER_PREFIXES = ['Ctrl', 'Alt', 'Shift', 'Meta'];
 
 function normalizeRecordedKey(event: React.KeyboardEvent<HTMLInputElement>): string | null {
   if (event.code === 'Backquote') return 'Backquote';
   if (/^Key[A-Z]$/.test(event.code)) return event.code.slice(3);
   if (/^Digit\d$/.test(event.code)) return event.code.slice(5);
+  if (/^F\d{1,2}$/.test(event.code)) return event.code;
 
   const key = String(event.key || '').trim();
   if (!key) return null;
@@ -169,11 +248,38 @@ function composeHotkey(event: React.KeyboardEvent<HTMLInputElement>): string | n
   return parts.join('+');
 }
 
-const WINDOW_PRESETS: Array<{ ratio: number; key: 'presetHalf' | 'presetThird' | 'presetTwoThirds' | 'presetThreeQuarters' }> = [
-  { ratio: 0.5, key: 'presetHalf' },
-  { ratio: 1 / 3, key: 'presetThird' },
-  { ratio: 2 / 3, key: 'presetTwoThirds' },
-  { ratio: 0.75, key: 'presetThreeQuarters' }
+/** Global shortcuts must not steal plain typing: a modifier or an F-key. */
+function isTypingSafe(combo: string): boolean {
+  const parts = combo.split('+').map((part) => part.trim());
+  if (parts.some((part) => MODIFIER_PREFIXES.includes(part))) return true;
+  return parts.some((part) => /^F([1-9]|1\d|2[0-4])$/.test(part));
+}
+
+/** Render `Ctrl+Alt+R` as three discrete keycaps. */
+function ComboKeys({ combo }: { combo: string }) {
+  const parts = combo.split('+').filter(Boolean);
+  if (!parts.length) {
+    return <span className="text-xs text-slate-400 dark:text-zinc-500">—</span>;
+  }
+  return (
+    <span className="flex items-center gap-1">
+      {parts.map((part, index) => (
+        <kbd
+          key={`${part}-${index}`}
+          className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-slate-600 shadow-[0_1px_0_rgba(15,23,42,0.08)] dark:border-zinc-700 dark:bg-zinc-800 dark:text-slate-200 dark:shadow-[0_1px_0_rgba(0,0,0,0.4)]"
+        >
+          {part}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
+const WINDOW_PRESETS: Array<{ ratio: number; label: 'presetHalf' | 'presetThird' | 'presetTwoThirds' | 'presetThreeQuarters' }> = [
+  { ratio: 0.5, label: 'presetHalf' },
+  { ratio: 1 / 3, label: 'presetThird' },
+  { ratio: 2 / 3, label: 'presetTwoThirds' },
+  { ratio: 0.75, label: 'presetThreeQuarters' }
 ];
 
 export function MainMenu({
@@ -194,22 +300,50 @@ export function MainMenu({
   isInsideMode,
   onTogglePositionLock,
   isPositionLocked,
+  isPinned,
+  onTogglePin,
+  isSidebarVisible,
+  hotkeysEnabled,
+  onToggleHotkeysEnabled,
+  onRescueWindow,
   onAbout
 }: MainMenuProps) {
-  const [view, setView] = useState<MenuView>('main');
+  const [view, setView] = useState<MenuView>('appearance');
   const [editingHotkeys, setEditingHotkeys] = useState<HotkeyConfig>(hotkeys);
   const [recordingKey, setRecordingKey] = useState<keyof HotkeyConfig | null>(null);
+  const [recordError, setRecordError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
   const inputRefs = useRef<Partial<Record<keyof HotkeyConfig, HTMLInputElement | null>>>({});
   const t = TEXT[lang];
+  const labels = HOTKEY_LABELS[lang];
 
   useEffect(() => {
     setEditingHotkeys(hotkeys);
     setRecordingKey(null);
+    setRecordError(null);
   }, [hotkeys]);
 
-  const hasChanges = useMemo(() => JSON.stringify(editingHotkeys) !== JSON.stringify(hotkeys), [editingHotkeys, hotkeys]);
+  const duplicateKeys = useMemo(() => {
+    const seen = new Map<string, number>();
+    hotkeyKeys.forEach((key) => {
+      const value = editingHotkeys[key]?.trim().toUpperCase();
+      if (!value) return;
+      seen.set(value, (seen.get(value) ?? 0) + 1);
+    });
+    return new Set(
+      hotkeyKeys
+        .map((key) => editingHotkeys[key]?.trim().toUpperCase())
+        .filter((value) => Boolean(value) && (seen.get(value as string) ?? 0) > 1)
+    );
+  }, [editingHotkeys]);
+
+  const hasChanges = useMemo(
+    () => JSON.stringify(editingHotkeys) !== JSON.stringify(hotkeys),
+    [editingHotkeys, hotkeys]
+  );
 
   const startRecording = (key: keyof HotkeyConfig) => {
+    setRecordError(null);
     setRecordingKey(key);
     window.setTimeout(() => inputRefs.current[key]?.focus(), 0);
   };
@@ -220,231 +354,498 @@ export function MainMenu({
 
     if (event.key === 'Escape') {
       setRecordingKey(null);
+      setRecordError(null);
       return;
     }
 
     const next = composeHotkey(event);
     if (!next) return;
+    if (!isTypingSafe(next)) {
+      setRecordError(t.modifierRequired);
+      return;
+    }
 
     setEditingHotkeys((prev) => ({ ...prev, [key]: next }));
     setRecordingKey(null);
+    setRecordError(null);
   };
+
+  const tabs: Array<{ id: MenuView; label: string; icon: React.ReactNode }> = [
+    { id: 'appearance', label: t.tabs.appearance, icon: <Sun size={14} /> },
+    { id: 'window', label: t.tabs.window, icon: <Layout size={14} /> },
+    { id: 'shortcuts', label: t.tabs.shortcuts, icon: <Keyboard size={14} /> },
+    { id: 'recovery', label: t.tabs.recovery, icon: <LifeBuoy size={14} /> }
+  ];
 
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.95, y: 20 }}
+      initial={{ opacity: 0, scale: 0.96, y: 16 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.95, y: 20 }}
-      transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-      className="absolute bottom-6 left-24 z-[2147483647] flex w-80 flex-col overflow-hidden rounded-[32px] border border-white/40 bg-white/80 shadow-2xl shadow-black/20 backdrop-blur-3xl pointer-events-auto dark:border-white/10 dark:bg-zinc-900/80"
+      exit={{ opacity: 0, scale: 0.96, y: 16 }}
+      transition={{ type: 'spring', damping: 28, stiffness: 320 }}
+      className="pointer-events-auto absolute bottom-6 left-24 z-[2147483647] flex w-[368px] flex-col overflow-hidden rounded-[26px] border border-white/60 bg-white/85 shadow-2xl shadow-black/25 backdrop-blur-3xl dark:border-white/10 dark:bg-zinc-950/85"
     >
-      <AnimatePresence mode="wait">
-        {view === 'main' ? (
-          <motion.div
-            key="main"
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: -20 }}
-            transition={{ duration: 0.2 }}
-            className="flex max-h-[60vh] flex-col"
-          >
-            <div className="flex shrink-0 items-center justify-between border-b border-black/5 px-6 py-5 dark:border-white/5">
-              <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">{t.settings}</h2>
-              <button
-                onClick={onClose}
-                className="rounded-full bg-black/5 p-2 transition-colors hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20"
-                type="button"
-              >
-                <X size={18} className="text-slate-600 dark:text-slate-300" />
-              </button>
-            </div>
+      {/* Header */}
+      <div className="flex shrink-0 items-start justify-between px-5 pt-5">
+        <div>
+          <h2 className="text-[15px] font-semibold tracking-tight text-slate-900 dark:text-white">{t.settings}</h2>
+          <p className="mt-0.5 text-[11px] font-medium text-slate-400 dark:text-zinc-500">
+            {t.footerVersion} {__APP_VERSION__}
+          </p>
+        </div>
+        <button
+          onClick={onClose}
+          className="rounded-full bg-black/[0.06] p-1.5 transition-colors hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20"
+          type="button"
+        >
+          <X size={16} className="text-slate-600 dark:text-slate-300" />
+        </button>
+      </div>
 
-            <div className="space-y-4 overflow-y-auto p-4 scrollbar-hide">
-              <div className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm dark:border-zinc-700/50 dark:bg-zinc-800/50">
-                <div className="mb-3 flex items-center gap-3 font-medium text-slate-700 dark:text-slate-200">
-                  <Droplet size={18} className="text-teal-500" />
-                  <span>{t.windowOpacity}</span>
-                  <span className="ml-auto text-sm text-slate-400">{opacity}%</span>
+      {/* Segmented navigation */}
+      <div className="mx-4 mt-4 flex shrink-0 gap-1 rounded-xl bg-black/[0.05] p-1 dark:bg-white/[0.06]">
+        {tabs.map((tab) => {
+          const active = view === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setView(tab.id)}
+              className={`relative flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+                active
+                  ? 'bg-white text-slate-900 shadow-sm dark:bg-zinc-800 dark:text-white'
+                  : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
+              }`}
+            >
+              {tab.icon}
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Body */}
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 scrollbar-hide">
+        <AnimatePresence mode="wait" initial={false}>
+          {view === 'appearance' && (
+            <motion.div
+              key="appearance"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.14 }}
+              className="space-y-3"
+            >
+              <Card>
+                <Row label={t.theme}>
+                  <Segmented
+                    value={isDarkMode ? 'dark' : 'light'}
+                    options={[
+                      { id: 'light', label: t.light, icon: <Sun size={12} /> },
+                      { id: 'dark', label: t.dark, icon: <Moon size={12} /> }
+                    ]}
+                    onChange={(next) => {
+                      if ((next === 'dark') !== isDarkMode) onToggleDarkMode();
+                    }}
+                  />
+                </Row>
+                <Row label={t.language} last>
+                  <Segmented
+                    value={lang}
+                    options={[
+                      { id: 'zh', label: t.zh },
+                      { id: 'en', label: t.en }
+                    ]}
+                    onChange={(next) => {
+                      if (next !== lang) onLangChange(next as UILang);
+                    }}
+                  />
+                </Row>
+              </Card>
+
+              <Card>
+                <div className="px-4 py-3">
+                  <div className="flex items-center gap-2 text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                    <Droplet size={15} className="text-brand-500" />
+                    <span>{t.opacity}</span>
+                    <span className="ml-auto font-mono text-[11px] text-slate-400 dark:text-zinc-500">{opacity}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="20"
+                    max="100"
+                    value={opacity}
+                    onChange={(e) => setOpacity(parseInt(e.target.value, 10))}
+                    className="mt-3 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-500 dark:bg-zinc-700"
+                  />
+                  <p className="mt-2.5 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.opacityHint}</p>
                 </div>
-                <input
-                  type="range"
-                  min="20"
-                  max="100"
-                  value={opacity}
-                  onChange={(e) => setOpacity(parseInt(e.target.value, 10))}
-                  className="h-2 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-teal-500 dark:bg-zinc-700"
+              </Card>
+            </motion.div>
+          )}
+
+          {view === 'window' && (
+            <motion.div
+              key="window"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.14 }}
+              className="space-y-3"
+            >
+              <Card>
+                <div className="px-4 pt-3.5">
+                  <div className="flex items-center gap-2 text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                    <Monitor size={15} className="text-brand-500" />
+                    <span>{t.presets}</span>
+                  </div>
+                  <div className="mt-2.5 flex gap-1.5 pb-3.5">
+                    {WINDOW_PRESETS.map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => onResizeRatio(preset.ratio)}
+                        className="flex-1 rounded-lg border border-slate-200 bg-white py-1.5 font-mono text-[11px] font-semibold text-slate-600 transition-colors hover:border-brand-400 hover:text-brand-700 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-slate-300 dark:hover:border-brand-500 dark:hover:text-brand-300"
+                      >
+                        {t[preset.label]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+
+              <Card>
+                <SwitchRow
+                  icon={<Pin size={15} />}
+                  label={t.pinned}
+                  hint={t.pinnedHint}
+                  checked={isPinned}
+                  onChange={onTogglePin}
                 />
-              </div>
-
-              <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm dark:border-zinc-700/50 dark:bg-zinc-800/50">
-                <MenuItem
-                  icon={isDarkMode ? <Moon size={18} /> : <Sun size={18} />}
-                  label={t.darkMode}
-                  toggle
-                  isToggled={isDarkMode}
-                  onClick={onToggleDarkMode}
+                <SwitchRow
+                  icon={<MousePointer2 size={15} />}
+                  label={t.insideMode}
+                  hint={t.insideHint}
+                  checked={isInsideMode}
+                  onChange={onToggleInsideMode}
                 />
-                <MenuItem icon={<Monitor size={18} />} label={t.windowPreset} onClick={() => setView('windowPresets')} />
-                <MenuItem icon={<Layout size={18} />} label={t.sidebarMode} onClick={onToggleSidebar} />
-                <MenuItem icon={<MousePointer2 size={18} />} label={t.insideMode} toggle isToggled={isInsideMode} onClick={onToggleInsideMode} />
-                <MenuItem icon={<Lock size={18} />} label={t.positionLock} toggle isToggled={isPositionLocked} onClick={onTogglePositionLock} />
-              </div>
+                <SwitchRow
+                  icon={<Lock size={15} />}
+                  label={t.positionLock}
+                  hint={t.positionLockHint}
+                  checked={isPositionLocked}
+                  onChange={onTogglePositionLock}
+                />
+                <SwitchRow
+                  icon={<Layout size={15} />}
+                  label={t.sidebar}
+                  hint={t.sidebarHint}
+                  checked={isSidebarVisible}
+                  onChange={onToggleSidebar}
+                  last
+                />
+              </Card>
+            </motion.div>
+          )}
 
-              <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm dark:border-zinc-700/50 dark:bg-zinc-800/50">
-                <MenuItem icon={<Globe size={18} />} label={`${t.language}: ${lang === 'zh' ? t.zh : t.en}`} onClick={() => onLangChange(lang === 'zh' ? 'en' : 'zh')} />
-                <MenuItem icon={<Keyboard size={18} />} label={t.shortcuts} onClick={() => setView('shortcuts')} />
-                <MenuItem icon={<Info size={18} />} label={t.about} onClick={onAbout} />
-              </div>
+          {view === 'shortcuts' && (
+            <motion.div
+              key="shortcuts"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.14 }}
+              className="space-y-3"
+            >
+              <Card>
+                <SwitchRow
+                  icon={<Keyboard size={15} />}
+                  label={t.shortcutMaster}
+                  hint={t.shortcutMasterHint}
+                  checked={hotkeysEnabled}
+                  onChange={(next) => onToggleHotkeysEnabled(next)}
+                  last
+                />
+              </Card>
 
-              <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm dark:border-zinc-700/50 dark:bg-zinc-800/50">
-                <button className="w-full px-4 py-3.5 text-left font-medium text-red-500 transition-colors hover:bg-red-50 dark:hover:bg-red-500/10" type="button" onClick={onQuit}>
-                  <span className="flex items-center gap-3">
-                    <LogOut size={18} />
-                    <span>{t.quit}</span>
+              <Card>
+                <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5 dark:border-zinc-800">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-zinc-500">
+                    {t.shortcutTable}
                   </span>
+                  {recordError ? (
+                    <span className="flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                      <ShieldAlert size={11} />
+                      {recordError}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-slate-400 dark:text-zinc-500">{t.cancel}</span>
+                  )}
+                </div>
+                <div className={hotkeysEnabled ? '' : 'pointer-events-none opacity-45'}>
+                  {hotkeyKeys.map((key, index) => {
+                    const isRecording = recordingKey === key;
+                    const isDuplicate = duplicateKeys.has(editingHotkeys[key]?.trim().toUpperCase());
+                    return (
+                      <div
+                        key={key}
+                        className={`flex items-center gap-2 px-4 py-2 ${
+                          index === hotkeyKeys.length - 1 ? '' : 'border-b border-slate-100 dark:border-zinc-800/80'
+                        }`}
+                      >
+                        <span className="w-[108px] shrink-0 text-[11px] text-slate-500 dark:text-slate-400">
+                          {labels[key]}
+                        </span>
+                        <input
+                          ref={(node) => {
+                            inputRefs.current[key] = node;
+                          }}
+                          value={isRecording ? '' : editingHotkeys[key]}
+                          readOnly
+                          onFocus={() => setRecordingKey(key)}
+                          onBlur={() => setRecordingKey((current) => (current === key ? null : current))}
+                          onKeyDown={(event) => handleRecordKeyDown(key, event)}
+                          placeholder={isRecording ? t.recording : ''}
+                          className={`min-w-0 flex-1 rounded-lg border px-2 py-1 font-mono text-[11px] outline-none transition-colors ${
+                            isRecording
+                              ? 'border-brand-400 bg-brand-500/10 text-brand-700 ring-2 ring-brand-500/25 dark:border-brand-500 dark:text-brand-300'
+                              : isDuplicate
+                                ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-600/60 dark:bg-amber-500/10 dark:text-amber-300'
+                                : 'border-transparent bg-black/[0.04] text-slate-600 dark:bg-white/[0.06] dark:text-slate-300'
+                          }`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => startRecording(key)}
+                          className="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-500 transition-colors hover:border-brand-400 hover:text-brand-700 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-brand-500 dark:hover:text-brand-300"
+                        >
+                          {t.record}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+
+              <p className="px-1 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.shortcutHint}</p>
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetHotkeys();
+                    setRecordError(null);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-zinc-700 dark:text-slate-300 dark:hover:bg-zinc-800/60"
+                >
+                  <RotateCcw size={12} /> {t.reset}
+                </button>
+                <button
+                  type="button"
+                  disabled={!hasChanges || duplicateKeys.size > 0}
+                  onClick={() => {
+                    onSaveHotkeys(editingHotkeys);
+                    setSavedFlash(true);
+                    window.setTimeout(() => setSavedFlash(false), 1600);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-brand-500 px-2.5 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-brand-500/40"
+                >
+                  {savedFlash ? <Check size={12} /> : <Save size={12} />}
+                  {savedFlash ? t.shortcutSaved : t.save}
                 </button>
               </div>
-            </div>
-          </motion.div>
-        ) : view === 'shortcuts' ? (
-          <motion.div
-            key="shortcuts"
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 20 }}
-            transition={{ duration: 0.2 }}
-            className="flex max-h-[60vh] flex-col"
-          >
-            <div className="flex shrink-0 items-center gap-3 border-b border-black/5 px-4 py-5 dark:border-white/5">
-              <button
-                onClick={() => setView('main')}
-                className="-ml-2 rounded-full bg-transparent p-2 transition-colors hover:bg-black/5 dark:hover:bg-white/10"
-                type="button"
-                title={t.back}
-              >
-                <ChevronLeft size={20} className="text-slate-600 dark:text-slate-300" />
-              </button>
-              <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">{t.shortcuts}</h2>
-            </div>
+            </motion.div>
+          )}
 
-            <div className="space-y-3 overflow-y-auto p-4 scrollbar-hide">
-              {hotkeyKeys.map((key) => {
-                const isRecording = recordingKey === key;
-                return (
-                  <div key={key} className="flex items-center gap-3 rounded-xl border border-slate-100 bg-white px-3 py-2.5 dark:border-zinc-700/50 dark:bg-zinc-800/50">
-                    <span className="w-32 shrink-0 text-xs text-slate-500 dark:text-slate-400">{t.hotkey[key]}</span>
-                    <input
-                      ref={(node) => {
-                        inputRefs.current[key] = node;
-                      }}
-                      value={editingHotkeys[key]}
-                      readOnly
-                      onFocus={() => setRecordingKey(key)}
-                      onBlur={() => setRecordingKey((current) => (current === key ? null : current))}
-                      onKeyDown={(event) => handleRecordKeyDown(key, event)}
-                      className={`flex-1 rounded-lg border px-2.5 py-1.5 font-mono text-sm outline-none transition-colors ${isRecording
-                        ? 'border-teal-400 bg-teal-50/70 text-teal-700 ring-2 ring-teal-500/30 dark:border-teal-500/70 dark:bg-teal-500/10 dark:text-teal-200'
-                        : 'border-slate-200 bg-slate-50 text-slate-600 focus:border-teal-300 focus:ring-2 focus:ring-teal-500/30 dark:border-zinc-600 dark:bg-zinc-800 dark:text-slate-300'
-                      }`}
-                      placeholder={t.keyPlaceholder}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => startRecording(key)}
-                      className={`rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors ${isRecording
-                        ? 'bg-teal-500 text-white'
-                        : 'border border-slate-200 text-slate-500 hover:bg-slate-50 dark:border-zinc-600 dark:text-slate-300 dark:hover:bg-zinc-700/60'
-                      }`}
-                    >
-                      {isRecording ? t.recording : t.startRecord}
-                    </button>
-                  </div>
-                );
-              })}
-              <div className="px-1 text-xs text-slate-400 dark:text-slate-500">{t.recordingHint}</div>
-            </div>
-
-            <div className="flex shrink-0 items-center justify-end gap-2 border-t border-black/5 px-4 py-3 dark:border-white/5">
-              <button
-                type="button"
-                onClick={onResetHotkeys}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-1.5 text-sm text-slate-600 transition-colors hover:bg-slate-50 dark:border-zinc-600 dark:text-slate-300 dark:hover:bg-zinc-700/50"
-              >
-                <RotateCcw size={14} /> {t.reset}
-              </button>
-              <button
-                type="button"
-                disabled={!hasChanges}
-                onClick={() => onSaveHotkeys(editingHotkeys)}
-                className="inline-flex items-center gap-1 rounded-lg bg-teal-500 px-3 py-1.5 text-sm text-white transition-colors hover:bg-teal-600 disabled:cursor-not-allowed disabled:bg-teal-300"
-              >
-                <Save size={14} /> {t.save}
-              </button>
-            </div>
-          </motion.div>
-        ) : (
-          <motion.div
-            key="window-presets"
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 20 }}
-            transition={{ duration: 0.2 }}
-            className="flex max-h-[60vh] flex-col"
-          >
-            <div className="flex shrink-0 items-center gap-3 border-b border-black/5 px-4 py-5 dark:border-white/5">
-              <button
-                onClick={() => setView('main')}
-                className="-ml-2 rounded-full bg-transparent p-2 transition-colors hover:bg-black/5 dark:hover:bg-white/10"
-                type="button"
-                title={t.back}
-              >
-                <ChevronLeft size={20} className="text-slate-600 dark:text-slate-300" />
-              </button>
-              <h2 className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white">{t.windowPresetOptions}</h2>
-            </div>
-
-            <div className="space-y-4 overflow-y-auto p-4 scrollbar-hide">
-              <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm dark:border-zinc-700/50 dark:bg-zinc-800/50">
-                {WINDOW_PRESETS.map((preset) => (
-                  <MenuItem
-                    key={preset.key}
-                    icon={<Monitor size={18} />}
-                    label={t[preset.key]}
-                    onClick={() => onResizeRatio(preset.ratio)}
-                  />
-                ))}
+          {view === 'recovery' && (
+            <motion.div
+              key="recovery"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.14 }}
+              className="space-y-3"
+            >
+              <div className="rounded-2xl border border-brand-500/25 bg-brand-500/[0.07] p-3.5 dark:border-brand-500/30 dark:bg-brand-500/10">
+                <button
+                  type="button"
+                  onClick={onRescueWindow}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-500 py-2 text-[12px] font-semibold text-white shadow-sm shadow-brand-500/25 transition-colors hover:bg-brand-700"
+                >
+                  <LifeBuoy size={15} />
+                  {t.rescuePrimary}
+                </button>
+                <p className="mt-2.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{t.rescueHint}</p>
               </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+
+              <Card>
+                <div className="px-4 pb-1 pt-3.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-zinc-500">
+                  {t.rescueSteps}
+                </div>
+                <RecoveryRow label={t.rescueHotkey} hint={t.rescueAlways}>
+                  <ComboKeys combo={t.rescueHotkeyValue} />
+                </RecoveryRow>
+                <RecoveryRow label={t.rescueTray} hint="">
+                  <ChevronRight size={14} className="text-slate-300 dark:text-zinc-600" />
+                </RecoveryRow>
+                <RecoveryRow label={t.rescueRelaunch} hint={t.rescueRelaunchHint} last>
+                  <RotateCcw size={14} className="text-slate-300 dark:text-zinc-600" />
+                </RecoveryRow>
+              </Card>
+
+              <Card>
+                <button
+                  type="button"
+                  onClick={onAbout}
+                  className="flex w-full items-center gap-2.5 border-b border-slate-100 px-4 py-3 text-left text-[12px] font-medium text-slate-700 transition-colors hover:bg-black/[0.03] dark:border-zinc-800 dark:text-slate-200 dark:hover:bg-white/[0.04]"
+                >
+                  <Info size={15} className="text-slate-400 dark:text-zinc-500" />
+                  <span className="flex-1">{t.about}</span>
+                  <ChevronRight size={14} className="text-slate-300 dark:text-zinc-600" />
+                </button>
+                <button
+                  type="button"
+                  onClick={onQuit}
+                  className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-[12px] font-medium text-rose-600 transition-colors hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                >
+                  <LogOut size={15} />
+                  <span className="flex-1">{t.quit}</span>
+                </button>
+              </Card>
+
+              <div className="flex items-center justify-center gap-1.5 pb-1 text-[10px] text-slate-300 dark:text-zinc-600">
+                <Globe size={11} />
+                <span>DI-Viewer · {__APP_VERSION__}</span>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     </motion.div>
   );
 }
 
-interface MenuItemProps {
-  icon: React.ReactNode;
-  label: string;
-  toggle?: boolean;
-  isToggled?: boolean;
-  onClick?: () => void;
+function Card({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-zinc-800 dark:bg-zinc-900/70">
+      {children}
+    </div>
+  );
 }
 
-function MenuItem({ icon, label, toggle, isToggled, onClick }: MenuItemProps) {
+function Row({ label, children, last }: { label: string; children: React.ReactNode; last?: boolean }) {
   return (
-    <button onClick={onClick} className="group last:border-0 flex w-full items-center gap-3 border-b border-slate-100 px-4 py-3.5 text-left text-slate-700 transition-colors hover:bg-slate-50 dark:border-zinc-700/50 dark:text-slate-200 dark:hover:bg-zinc-700/50" type="button">
-      <span className="text-slate-400 transition-colors group-hover:text-teal-500">
-        {icon}
-      </span>
-      <span className="flex-1 font-medium">{label}</span>
+    <div
+      className={`flex items-center gap-3 px-4 py-2.5 ${
+        last ? '' : 'border-b border-slate-100 dark:border-zinc-800'
+      }`}
+    >
+      <span className="flex-1 text-[12px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+      {children}
+    </div>
+  );
+}
 
-      {toggle ? (
-        <div className={`relative h-6 w-11 rounded-full shadow-inner transition-colors ${isToggled ? 'bg-teal-500' : 'bg-slate-200 dark:bg-zinc-600'}`}>
-          <div className={`absolute top-1 left-1 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${isToggled ? 'translate-x-5' : 'translate-x-0'}`} />
-        </div>
-      ) : (
-        <ChevronRight size={16} className="text-slate-300 transition-transform group-hover:translate-x-0.5 dark:text-slate-500" />
-      )}
+function SwitchRow({
+  icon,
+  label,
+  hint,
+  checked,
+  onChange,
+  last
+}: {
+  icon: React.ReactNode;
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+  last?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${
+        last ? '' : 'border-b border-slate-100 dark:border-zinc-800'
+      }`}
+    >
+      <span className="text-slate-400 dark:text-zinc-500">{icon}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+        {hint ? (
+          <span className="mt-0.5 block truncate text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{hint}</span>
+        ) : null}
+      </span>
+      <span
+        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+          checked ? 'bg-brand-500' : 'bg-slate-200 dark:bg-zinc-700'
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-all ${
+            checked ? 'left-[18px]' : 'left-0.5'
+          }`}
+        />
+      </span>
     </button>
+  );
+}
+
+function RecoveryRow({
+  label,
+  hint,
+  children,
+  last
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+  last?: boolean;
+}) {
+  return (
+    <div
+      className={`flex items-center gap-3 px-4 py-2.5 ${
+        last ? '' : 'border-b border-slate-100 dark:border-zinc-800'
+      }`}
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block text-[12px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+        {hint ? <span className="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{hint}</span> : null}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function Segmented<T extends string>({
+  value,
+  options,
+  onChange
+}: {
+  value: T;
+  options: Array<{ id: T; label: string; icon?: React.ReactNode }>;
+  onChange: (next: T) => void;
+}) {
+  return (
+    <div className="flex shrink-0 gap-0.5 rounded-lg bg-black/[0.05] p-0.5 dark:bg-white/[0.07]">
+      {options.map((option) => {
+        const active = option.id === value;
+        return (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => onChange(option.id)}
+            className={`flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] font-medium transition-colors ${
+              active
+                ? 'bg-white text-slate-900 shadow-sm dark:bg-zinc-700 dark:text-white'
+                : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
+            }`}
+          >
+            {option.icon}
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }

@@ -8,7 +8,7 @@ use std::{
 
 use crate::{AppResult, LEGACY_HOME_URL};
 
-pub(crate) const PERSISTENCE_SCHEMA_VERSION: u32 = 1;
+pub(crate) const PERSISTENCE_SCHEMA_VERSION: u32 = 2;
 
 pub(crate) fn current_timestamp_ms() -> u128 {
     SystemTime::now()
@@ -21,10 +21,20 @@ fn default_schema_version() -> u32 {
     PERSISTENCE_SCHEMA_VERSION
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Hotkey files written before the typing-safety migration carry either
+/// `schemaVersion: 1` or no version at all. Treat both as "needs migration".
+fn legacy_hotkey_schema_version() -> u32 {
+    0
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HotkeyConfig {
-    #[serde(default = "default_schema_version")]
+    #[serde(default = "legacy_hotkey_schema_version")]
     pub(crate) schema_version: u32,
     pub(crate) toggle_play_pause: String,
     pub(crate) toggle_recording: String,
@@ -40,19 +50,77 @@ pub(crate) struct HotkeyConfig {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
+        // Every binding carries a modifier on purpose. These are *global*
+        // shortcuts: a bare `R` or `0` would be swallowed while the user types
+        // in any other application, which is exactly the bug this replaced.
         Self {
             schema_version: PERSISTENCE_SCHEMA_VERSION,
-            toggle_play_pause: "Backquote".to_string(),
-            toggle_recording: "R".to_string(),
-            toggle_show_hide: "0".to_string(),
-            inside_mode: "P".to_string(),
-            video_backward: "5".to_string(),
-            video_forward: "6".to_string(),
-            decrease_opacity: "7".to_string(),
-            increase_opacity: "8".to_string(),
-            request_full_screen: "O".to_string(),
+            toggle_play_pause: "Ctrl+Alt+Space".to_string(),
+            toggle_recording: "Ctrl+Alt+R".to_string(),
+            toggle_show_hide: "Ctrl+Alt+H".to_string(),
+            inside_mode: "Ctrl+Alt+P".to_string(),
+            video_backward: "Ctrl+Alt+J".to_string(),
+            video_forward: "Ctrl+Alt+L".to_string(),
+            decrease_opacity: "Ctrl+Alt+9".to_string(),
+            increase_opacity: "Ctrl+Alt+0".to_string(),
+            request_full_screen: "Ctrl+Alt+F".to_string(),
             close_window: "Ctrl+Q".to_string(),
         }
+    }
+}
+
+fn has_modifier(value: &str) -> bool {
+    value.split('+').any(|token| {
+        matches!(
+            token.trim().to_lowercase().as_str(),
+            "ctrl" | "control" | "alt" | "shift" | "meta" | "cmd" | "command" | "super"
+        )
+    })
+}
+
+/// Function keys and dedicated media keys do not produce text, so they are the
+/// only bindings that are harmless without a modifier.
+fn is_text_free_key(value: &str) -> bool {
+    let key = value.trim().to_uppercase();
+    if let Some(rest) = key.strip_prefix('F') {
+        if let Ok(number) = rest.parse::<u8>() {
+            return (1..=24).contains(&number);
+        }
+    }
+    matches!(
+        key.as_str(),
+        "PRINTSCREEN" | "SCROLLLOCK" | "PAUSE" | "MEDIAPLAYPAUSE" | "MEDIASTOP" | "CAPSLOCK"
+    )
+}
+
+impl HotkeyConfig {
+    /// Builds that shipped bare-key defaults registered them as global
+    /// shortcuts and stole those keystrokes from every text field. Promote any
+    /// modifier-less, text-producing binding to `Ctrl+Alt+<key>` once, gated on
+    /// the stored schema version so a deliberate later choice is never rewritten.
+    pub(crate) fn migrate_typing_safe(mut self) -> Self {
+        if self.schema_version >= PERSISTENCE_SCHEMA_VERSION {
+            return self;
+        }
+        let promote = |value: String| -> String {
+            let trimmed = value.trim();
+            if trimmed.is_empty() || has_modifier(trimmed) || is_text_free_key(trimmed) {
+                return trimmed.to_string();
+            }
+            format!("Ctrl+Alt+{trimmed}")
+        };
+        self.toggle_play_pause = promote(self.toggle_play_pause);
+        self.toggle_recording = promote(self.toggle_recording);
+        self.toggle_show_hide = promote(self.toggle_show_hide);
+        self.inside_mode = promote(self.inside_mode);
+        self.video_backward = promote(self.video_backward);
+        self.video_forward = promote(self.video_forward);
+        self.decrease_opacity = promote(self.decrease_opacity);
+        self.increase_opacity = promote(self.increase_opacity);
+        self.request_full_screen = promote(self.request_full_screen);
+        self.close_window = promote(self.close_window);
+        self.schema_version = PERSISTENCE_SCHEMA_VERSION;
+        self
     }
 }
 
@@ -101,6 +169,10 @@ pub(crate) struct PersistedState {
     pub(crate) window_maximized: bool,
     #[serde(default)]
     pub(crate) window_position_locked: bool,
+    /// Master switch for the user-configurable global shortcuts. The fixed
+    /// rescue shortcut stays registered either way.
+    #[serde(default = "default_true")]
+    pub(crate) hotkeys_enabled: bool,
     #[serde(default)]
     pub(crate) bookmarks: Vec<BookmarkItem>,
     #[serde(default)]
@@ -128,6 +200,7 @@ impl Default for PersistedState {
             window_visible: true,
             window_maximized: false,
             window_position_locked: false,
+            hotkeys_enabled: true,
             bookmarks: Vec::new(),
             tab_urls: vec![LEGACY_HOME_URL.to_string()],
             active_tab_index: 0,
@@ -324,6 +397,49 @@ mod tests {
         assert_eq!(config.video_backward, "ArrowLeft");
         assert_eq!(config.video_forward, "ArrowRight");
         assert_eq!(config.close_window, "Ctrl+Q");
+    }
+
+    #[test]
+    fn legacy_bare_keys_are_promoted_to_ctrl_alt_once() {
+        // v1 config as shipped by 1.1.20: bare letters/digits registered as
+        // global shortcuts, which stole ordinary typing system-wide.
+        let legacy = HotkeyConfig {
+            schema_version: 1,
+            toggle_play_pause: "Backquote".to_string(),
+            toggle_recording: "R".to_string(),
+            toggle_show_hide: "0".to_string(),
+            inside_mode: "P".to_string(),
+            video_backward: "5".to_string(),
+            video_forward: "6".to_string(),
+            decrease_opacity: "7".to_string(),
+            increase_opacity: "8".to_string(),
+            request_full_screen: "O".to_string(),
+            close_window: "Ctrl+Q".to_string(),
+        }
+        .migrate_typing_safe()
+        .sanitize();
+
+        assert_eq!(legacy.toggle_recording, "Ctrl+Alt+R");
+        assert_eq!(legacy.toggle_show_hide, "Ctrl+Alt+0");
+        assert_eq!(legacy.toggle_play_pause, "Ctrl+Alt+Backquote");
+        // Modifier-carrying bindings and function keys are left alone.
+        assert_eq!(legacy.close_window, "Ctrl+Q");
+        assert_eq!(legacy.schema_version, PERSISTENCE_SCHEMA_VERSION);
+
+        // Already-migrated configs must not be rewritten again.
+        let again = legacy.clone().migrate_typing_safe();
+        assert_eq!(again.toggle_recording, "Ctrl+Alt+R");
+    }
+
+    #[test]
+    fn function_keys_survive_migration_without_modifiers() {
+        let config = HotkeyConfig {
+            schema_version: 0,
+            toggle_play_pause: "F8".to_string(),
+            ..HotkeyConfig::default()
+        }
+        .migrate_typing_safe();
+        assert_eq!(config.toggle_play_pause, "F8");
     }
 
     #[test]

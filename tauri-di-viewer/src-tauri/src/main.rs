@@ -44,6 +44,9 @@ const RESIZE_DEBOUNCE_MS: u64 = 250;
 /// Windows reports (-32000, -32000) for minimized/iconic windows; anything
 /// at or below this coordinate is treated as a minimized-window artifact.
 const MIN_VISIBLE_COORD: i32 = -30000;
+/// Fixed, non-editable recovery shortcut. Deliberately obscure and always
+/// registered, even when the user disabled the configurable hotkeys.
+const RESCUE_SHORTCUT: &str = "Ctrl+Alt+Shift+R";
 /// WebView2 must launch with the GPU sandbox disabled on some machines
 /// (e.g. dual-AMD-GPU setups): otherwise the GPU process hangs and Windows
 /// pops "msedgewebview2 has stopped working" on every launch.
@@ -140,6 +143,7 @@ struct FrontendState {
     visible: bool,
     maximized: bool,
     position_locked: bool,
+    hotkeys_enabled: bool,
     sidebar_visible: bool,
     ui_lang: String,
     bookmarks: Vec<BookmarkItem>,
@@ -198,6 +202,10 @@ struct AppState {
     move_seq: AtomicU64,
     resize_seq: AtomicU64,
     sidebar_visible: AtomicBool,
+    /// Monotonic counter used to mint stable, unique window labels for tabs.
+    /// Labels are never derived from the tab index (indexes shift on close),
+    /// so a tab keeps the same webview for its whole lifetime.
+    next_tab_seq: AtomicU64,
     log_store: Mutex<Vec<LogEntry>>,
 }
 
@@ -390,6 +398,17 @@ fn sanitize_tab_urls(items: Vec<String>, home_url: &str) -> Vec<String> {
     result
 }
 
+/// Restored tabs keep the legacy `browser` label for the first session and
+/// mint `browser-<n>` for the rest, so `browser*` capabilities and any older
+/// restore state keep working while every tab still owns its own webview.
+fn restored_tab_label(slot: usize) -> String {
+    if slot == 0 {
+        BROWSER_LABEL.to_string()
+    } else {
+        format!("browser-{}", slot + 1)
+    }
+}
+
 fn build_tabs_from_persist(
     persist: &mut PersistedState,
     home_url: &str,
@@ -412,8 +431,9 @@ fn build_tabs_from_persist(
 
     let tabs = urls
         .into_iter()
-        .map(|url| BrowserTab {
-            label: BROWSER_LABEL.to_string(),
+        .enumerate()
+        .map(|(slot, url)| BrowserTab {
+            label: restored_tab_label(slot),
             title: tab_title_from_url(&url),
             url,
         })
@@ -512,15 +532,14 @@ fn sync_tab_from_browser_label(app: &AppHandle, label: &str) -> AppResult<()> {
         .lock()
         .map_err(|_| "State lock poisoned".to_string())?;
 
-    if label == BROWSER_LABEL {
-        if !locked.tabs.is_empty() {
-            let idx = locked.active_tab.min(locked.tabs.len() - 1);
-            locked.tabs[idx].url = current_url.clone();
-            locked.tabs[idx].title = tab_title_from_url(&current_url);
-        }
-    } else if let Some(tab) = locked.tabs.iter_mut().find(|tab| tab.label == label) {
+    if let Some(tab) = locked.tabs.iter_mut().find(|tab| tab.label == label) {
         tab.url = current_url.clone();
         tab.title = tab_title_from_url(&current_url);
+    } else if !locked.tabs.is_empty() {
+        // Legacy state where several tabs shared one label.
+        let idx = locked.active_tab.min(locked.tabs.len() - 1);
+        locked.tabs[idx].url = current_url.clone();
+        locked.tabs[idx].title = tab_title_from_url(&current_url);
     }
 
     Ok(())
@@ -544,8 +563,44 @@ fn active_browser_label(app: &AppHandle) -> AppResult<String> {
     Ok(locked.tabs[idx].label.clone())
 }
 
+fn browser_labels(app: &AppHandle) -> Vec<String> {
+    let state = app.state::<AppState>();
+    let Ok(locked) = state.data.lock() else {
+        return Vec::new();
+    };
+    locked.tabs.iter().map(|tab| tab.label.clone()).collect()
+}
+
+/// Create the webview for a tab that has not been opened yet in this session.
+/// Tabs are created lazily and then kept alive (hidden) so switching back is a
+/// show/hide, never a reload: scroll position, form state and video playback
+/// all survive.
+fn ensure_browser_window(app: &AppHandle, label: &str) -> AppResult<WebviewWindow> {
+    if let Some(window) = app.get_webview_window(label) {
+        return Ok(window);
+    }
+    let (initial, url) = {
+        let state = app.state::<AppState>();
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        let url = locked
+            .tabs
+            .iter()
+            .find(|tab| tab.label == label)
+            .map(|tab| tab.url.clone())
+            .unwrap_or_else(|| locked.persist.last_url.clone());
+        (locked.persist.clone(), url)
+    };
+    let window = create_browser_tab_window(app, label, &initial, &url, false)?;
+    push_log(app, "native", "create_tab_window", label.to_string());
+    Ok(window)
+}
+
 fn browser_window(app: &AppHandle) -> AppResult<WebviewWindow> {
-    browser_window_by_label(app, BROWSER_LABEL)
+    let label = active_browser_label(app).unwrap_or_else(|_| BROWSER_LABEL.to_string());
+    ensure_browser_window(app, &label)
 }
 
 fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
@@ -1028,12 +1083,24 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
         .url()
         .map(|u| u.to_string())
         .unwrap_or_else(|_| state.home_url.clone());
+    // Only the tab that is actually on screen may drive the persisted
+    // "last url" and "window visible" flags; background tab windows are
+    // deliberately hidden and navigated on their own.
+    let is_active_tab = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        locked
+            .tabs
+            .get(locked.active_tab.min(locked.tabs.len().saturating_sub(1)))
+            .map(|tab| tab.label == label)
+            .unwrap_or(true)
+    };
     update_persist(&state, |persist| {
-        persist.last_url = if current_url.trim().is_empty() {
-            persist.last_url.clone()
-        } else {
-            current_url.clone()
-        };
+        if is_active_tab && !current_url.trim().is_empty() {
+            persist.last_url = current_url.clone();
+        }
         if !persist.window_position_locked {
             persist.window_start_x = position.x as f64 / scale;
             persist.window_start_y = position.y as f64 / scale;
@@ -1042,8 +1109,10 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
         // Using outer size here causes cumulative growth each tab/window cycle.
         persist.window_width = (inner.width as f64 / scale).round();
         persist.window_height = (inner.height as f64 / scale).round();
-        persist.window_visible = visible;
-        persist.window_maximized = maximized;
+        if is_active_tab {
+            persist.window_visible = visible;
+            persist.window_maximized = maximized;
+        }
     })?;
     sync_tab_from_browser_label(app, label)
 }
@@ -1060,10 +1129,13 @@ fn toggle_show_hide_impl(app: &AppHandle) -> AppResult<bool> {
 
     let _ = execute_video_action(app, "toggle_play_pause");
     if next_visible {
+        apply_saved_window_state(app, &browser)?;
+        let _ = browser.unminimize();
         browser
             .show()
             .map_err(|err| format!("Show window failed: {err}"))?;
         let _ = browser.set_focus();
+        sync_shell_visibility(app, &browser);
     } else {
         browser
             .hide()
@@ -1078,11 +1150,6 @@ fn toggle_show_hide_impl(app: &AppHandle) -> AppResult<bool> {
 }
 
 fn set_inside_mode_impl(app: &AppHandle, inside: bool) -> AppResult<bool> {
-    let browser = browser_window(app)?;
-    browser
-        .set_ignore_cursor_events(inside)
-        .map_err(|err| format!("Set click-through failed: {err}"))?;
-
     let state = app.state::<AppState>();
     let opacity = {
         let locked = state
@@ -1091,7 +1158,17 @@ fn set_inside_mode_impl(app: &AppHandle, inside: bool) -> AppResult<bool> {
             .map_err(|_| "State lock poisoned".to_string())?;
         locked.persist.window_opacity
     };
-    apply_window_effects(&browser, opacity, inside)?;
+    // Every tab owns a window, so the effect has to land on all of them;
+    // otherwise switching tabs would reveal a stale click-through state.
+    for label in browser_labels(app) {
+        let Ok(browser) = browser_window_by_label(app, &label) else {
+            continue;
+        };
+        browser
+            .set_ignore_cursor_events(inside)
+            .map_err(|err| format!("Set click-through failed: {err}"))?;
+        apply_window_effects(&browser, opacity, inside)?;
+    }
 
     update_persist(&state, |persist| {
         persist.window_inside = inside;
@@ -1124,10 +1201,13 @@ fn toggle_on_top_impl(app: &AppHandle) -> AppResult<bool> {
             .map_err(|_| "State lock poisoned".to_string())?;
         !locked.persist.window_on_top
     };
-    let browser = browser_window(app)?;
-    browser
-        .set_always_on_top(next)
-        .map_err(|err| format!("Set always-on-top failed: {err}"))?;
+    for label in browser_labels(app) {
+        if let Ok(browser) = browser_window_by_label(app, &label) {
+            browser
+                .set_always_on_top(next)
+                .map_err(|err| format!("Set always-on-top failed: {err}"))?;
+        }
+    }
     update_persist(&state, |persist| {
         persist.window_on_top = next;
     })?;
@@ -1136,7 +1216,6 @@ fn toggle_on_top_impl(app: &AppHandle) -> AppResult<bool> {
 
 fn set_opacity_impl(app: &AppHandle, opacity: f64) -> AppResult<f64> {
     let next = opacity.clamp(0.2, 1.0);
-    let browser = browser_window(app)?;
     let state = app.state::<AppState>();
     let inside = {
         let locked = state
@@ -1145,7 +1224,11 @@ fn set_opacity_impl(app: &AppHandle, opacity: f64) -> AppResult<f64> {
             .map_err(|_| "State lock poisoned".to_string())?;
         locked.persist.window_inside
     };
-    apply_window_effects(&browser, next, inside)?;
+    for label in browser_labels(app) {
+        if let Ok(browser) = browser_window_by_label(app, &label) {
+            apply_window_effects(&browser, next, inside)?;
+        }
+    }
     update_persist(&state, |persist| {
         persist.window_opacity = next;
     })?;
@@ -1160,8 +1243,10 @@ fn set_shell_opacity_impl(app: &AppHandle, opacity: f64) -> AppResult<f64> {
     })?;
 
     let script = format!("(() => {{ document.documentElement.style.opacity = '{}'; document.body.style.opacity = '{}'; }})();", next, next);
-    if let Ok(browser) = browser_window(app) {
-        let _ = browser.eval(script);
+    for label in browser_labels(app) {
+        if let Ok(browser) = browser_window_by_label(app, &label) {
+            let _ = browser.eval(script.clone());
+        }
     }
     Ok(next)
 }
@@ -1291,6 +1376,152 @@ fn fit_window_to_start_page(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+/// True when at least a readable chunk of the window sits inside a monitor.
+fn window_is_reachable(window: &WebviewWindow) -> bool {
+    let Ok(position) = window.outer_position() else {
+        return false;
+    };
+    let Ok(size) = window.outer_size() else {
+        return false;
+    };
+    if position.x <= MIN_VISIBLE_COORD
+        || position.y <= MIN_VISIBLE_COORD
+        || size.width == 0
+        || size.height == 0
+    {
+        return false;
+    }
+    let Ok(monitors) = window.available_monitors() else {
+        return true;
+    };
+    if monitors.is_empty() {
+        return true;
+    }
+    monitors.iter().any(|monitor| {
+        let origin = monitor.position();
+        let extent = monitor.size();
+        let overlap_x = (position.x + size.width as i32).min(origin.x + extent.width as i32)
+            - position.x.max(origin.x);
+        let overlap_y = (position.y + size.height as i32).min(origin.y + extent.height as i32)
+            - position.y.max(origin.y);
+        overlap_x >= 160 && overlap_y >= 90
+    })
+}
+
+/// Center and clamp the window onto the primary monitor. Used on launch and by
+/// the rescue shortcut when the saved rect is off-screen (monitor unplugged,
+/// resolution changed, or geometry captured while the window was iconic).
+fn center_window_on_primary(window: &WebviewWindow) -> AppResult<()> {
+    let monitor = window
+        .primary_monitor()
+        .map_err(|err| format!("Read monitor failed: {err}"))?
+        .or_else(|| {
+            window
+                .available_monitors()
+                .ok()
+                .and_then(|list| list.into_iter().next())
+        });
+    let Some(monitor) = monitor else {
+        return Ok(());
+    };
+    let origin = monitor.position();
+    let extent = monitor.size();
+    let fallback_width = ((extent.width as f64) * 0.6).round().max(900.0) as u32;
+    let fallback_height = ((extent.height as f64) * 0.6).round().max(600.0) as u32;
+    let (width, height) = match window.outer_size() {
+        Ok(size) if size.width >= 600 && size.height >= 320 => {
+            (size.width.min(extent.width), size.height.min(extent.height))
+        }
+        _ => (
+            fallback_width.min(extent.width),
+            fallback_height.min(extent.height),
+        ),
+    };
+    let x = origin.x + ((extent.width as i32 - width as i32) / 2).max(0);
+    let y = origin.y + ((extent.height as i32 - height as i32) / 2).max(0);
+    let _ = window.set_size(Size::Physical(PhysicalSize::new(width, height)));
+    window
+        .set_position(Position::Physical(PhysicalPosition::new(x, y)))
+        .map_err(|err| format!("Set position failed: {err}"))?;
+    Ok(())
+}
+
+fn ensure_window_on_screen(window: &WebviewWindow) -> AppResult<()> {
+    if window_is_reachable(window) {
+        return Ok(());
+    }
+    center_window_on_primary(window)
+}
+
+/// Recovery path for "I cannot find the window". Restores a visible, fully
+/// opaque, clickable window on screen. Wired to a fixed shortcut, the tray and
+/// the settings panel so it never depends on the user's own hotkey config
+/// (which may be exactly what put the window out of reach).
+fn rescue_window_impl(app: &AppHandle) -> AppResult<()> {
+    let state = app.state::<AppState>();
+    let on_top = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        locked.persist.window_on_top
+    };
+    update_persist(&state, |persist| {
+        persist.window_opacity = 1.0;
+        persist.window_inside = false;
+        persist.window_visible = true;
+        // A locked position would snap the window straight back to the
+        // off-screen rect we are about to correct.
+        persist.window_position_locked = false;
+    })?;
+
+    for label in browser_labels(app) {
+        let Ok(window) = browser_window_by_label(app, &label) else {
+            continue;
+        };
+        let _ = window.set_ignore_cursor_events(false);
+        let _ = apply_window_effects(&window, 1.0, false);
+        let _ = window.set_always_on_top(on_top);
+        let _ = window
+            .eval("(() => { document.documentElement.style.opacity = '1'; document.body.style.opacity = '1'; })();");
+    }
+
+    let window = browser_window(app)?;
+    let _ = window.unminimize();
+    window
+        .show()
+        .map_err(|err| format!("Show window failed: {err}"))?;
+    let _ = window.set_always_on_top(on_top);
+    ensure_window_on_screen(&window)?;
+    let _ = window.set_focus();
+    sync_shell_visibility(app, &window);
+    push_log(app, "native", "rescue_window", "ok");
+    Ok(())
+}
+
+#[tauri::command]
+fn rescue_window(app: AppHandle) -> AppResult<()> {
+    rescue_window_impl(&app)
+}
+
+/// Toggle the user-configurable global shortcuts without losing the rescued
+/// window path: the fixed rescue shortcut is always re-registered.
+#[tauri::command]
+fn set_hotkeys_enabled(app: AppHandle, state: tauri::State<AppState>, enabled: bool) -> AppResult<bool> {
+    update_persist(&state, |persist| {
+        persist.hotkeys_enabled = enabled;
+    })?;
+    let config = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        locked.hotkeys.clone()
+    };
+    register_hotkeys(&app, &config, enabled)?;
+    Ok(enabled)
+}
+
 fn bookmarks_snapshot(state: &AppState) -> AppResult<Vec<BookmarkItem>> {
     let locked = state
         .data
@@ -1393,9 +1624,25 @@ fn run_hotkey_action(app: &AppHandle, action: HotkeyAction) -> AppResult<()> {
     }
 }
 
-fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig) -> AppResult<()> {
+fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig, enabled: bool) -> AppResult<()> {
     let manager = app.global_shortcut();
     let _ = manager.unregister_all();
+
+    // The rescue shortcut is intentionally not user-editable and is registered
+    // even when the user has switched global hotkeys off: it is the documented
+    // way back from "hidden window / 20% opacity / click-through".
+    if let Err(err) = manager.on_shortcut(RESCUE_SHORTCUT, |app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+            let _ = rescue_window_impl(app);
+        }
+    }) {
+        push_log(app, "native", "register_rescue_hotkey", format!("failed:{err}"));
+    }
+
+    if !enabled {
+        push_log(app, "native", "register_hotkeys", "disabled");
+        return Ok(());
+    }
 
     let mappings = [
         (
@@ -1457,6 +1704,12 @@ fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig) -> AppResult<()> {
             continue;
         }
         let key = if key == "\u{0060}" { "Backquote" } else { key };
+        if key.eq_ignore_ascii_case(RESCUE_SHORTCUT) {
+            // The rescue shortcut is reserved; a user binding on top of it would
+            // fail to register and take the whole save down with it.
+            push_log(app, "native", "register_hotkeys", format!("reserved:{name}"));
+            continue;
+        }
         let result = manager.on_shortcut(key, move |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
                 let _ = run_hotkey_action(app, action);
@@ -1523,10 +1776,29 @@ fn setup_tray(app: &AppHandle) -> AppResult<()> {
         None::<&str>,
     )
     .map_err(|err| format!("Create tray menu failed: {err}"))?;
+    let rescue_item = MenuItem::with_id(
+        app,
+        "tray_rescue",
+        ui_text(
+            ui_lang_zh,
+            "\u{627E}\u{56DE}\u{7A97}\u{53E3}\u{FF08}\u{6062}\u{590D}\u{900F}\u{660E}\u{5EA6}/\u{4F4D}\u{7F6E}\u{FF09}",
+            "Restore Window (reset opacity & position)",
+        ),
+        true,
+        None::<&str>,
+    )
+    .map_err(|err| format!("Create tray menu failed: {err}"))?;
     let separator = PredefinedMenuItem::separator(app).map_err(|err| err.to_string())?;
     let menu = Menu::with_items(
         app,
-        &[&panel_item, &show_item, &hide_item, &separator, &exit_item],
+        &[
+            &panel_item,
+            &show_item,
+            &hide_item,
+            &rescue_item,
+            &separator,
+            &exit_item,
+        ],
     )
     .map_err(|err| format!("Create tray menu failed: {err}"))?;
 
@@ -1535,6 +1807,9 @@ fn setup_tray(app: &AppHandle) -> AppResult<()> {
         .on_menu_event(|app, event| match event.id.as_ref() {
             "tray_panel" => {
                 let _ = create_or_show_control_window(app);
+            }
+            "tray_rescue" => {
+                let _ = rescue_window_impl(app);
             }
             "tray_show" => {
                 if let Ok(browser) = browser_window(app) {
@@ -1725,7 +2000,7 @@ fn create_browser_tab_window(
 
 fn create_browser_window(app: &AppHandle) -> AppResult<()> {
     let state = app.state::<AppState>();
-    let (initial, active_url, visible) = {
+    let (initial, active_url, visible, active_label) = {
         let locked = state
             .data
             .lock()
@@ -1735,19 +2010,26 @@ fn create_browser_window(app: &AppHandle) -> AppResult<()> {
         } else {
             locked.active_tab.min(locked.tabs.len() - 1)
         };
-        let active_url = if locked.tabs.is_empty() {
-            locked.persist.last_url.clone()
+        let (active_url, active_label) = if locked.tabs.is_empty() {
+            (
+                locked.persist.last_url.clone(),
+                BROWSER_LABEL.to_string(),
+            )
         } else {
-            locked.tabs[active].url.clone()
+            (
+                locked.tabs[active].url.clone(),
+                locked.tabs[active].label.clone(),
+            )
         };
         (
             locked.persist.clone(),
             active_url,
             locked.persist.window_visible,
+            active_label,
         )
     };
 
-    let browser = create_browser_tab_window(app, BROWSER_LABEL, &initial, &active_url, visible)?;
+    let browser = create_browser_tab_window(app, &active_label, &initial, &active_url, visible)?;
     if visible {
         let _ = browser.show();
         let _ = browser.set_focus();
@@ -1844,14 +2126,17 @@ fn get_state(app: AppHandle, state: tauri::State<AppState>) -> AppResult<Fronten
         (locked.persist.clone(), locked.hotkeys.clone())
     };
 
-    if let Ok(browser) = browser_window(&app) {
-        if let Ok(url) = browser.url() {
-            snapshot.0.last_url = url.to_string();
+    // Read-only: never take the lazy-creation path here, `get_state` is polled.
+    if let Ok(label) = active_browser_label(&app) {
+        if let Ok(browser) = browser_window_by_label(&app, &label) {
+            if let Ok(url) = browser.url() {
+                snapshot.0.last_url = url.to_string();
+            }
+            snapshot.0.window_visible = browser.is_visible().unwrap_or(snapshot.0.window_visible);
+            snapshot.0.window_maximized = browser
+                .is_maximized()
+                .unwrap_or(snapshot.0.window_maximized);
         }
-        snapshot.0.window_visible = browser.is_visible().unwrap_or(snapshot.0.window_visible);
-        snapshot.0.window_maximized = browser
-            .is_maximized()
-            .unwrap_or(snapshot.0.window_maximized);
     }
 
     Ok(FrontendState {
@@ -1862,6 +2147,7 @@ fn get_state(app: AppHandle, state: tauri::State<AppState>) -> AppResult<Fronten
         visible: snapshot.0.window_visible,
         maximized: snapshot.0.window_maximized,
         position_locked: snapshot.0.window_position_locked,
+        hotkeys_enabled: snapshot.0.hotkeys_enabled,
         sidebar_visible: state.sidebar_visible.load(Ordering::SeqCst),
         ui_lang: current_ui_lang(&state),
         bookmarks: snapshot.0.bookmarks,
@@ -2015,11 +2301,79 @@ fn get_logs(state: tauri::State<AppState>) -> AppResult<Vec<LogEntry>> {
     Ok(logs.clone())
 }
 
+/// Re-apply the persisted layer effects to a single tab window. Each tab owns
+/// a window, so opacity / click-through / always-on-top must be restored on the
+/// one being presented, otherwise a freshly created tab would look different.
+fn apply_saved_window_state(app: &AppHandle, window: &WebviewWindow) -> AppResult<()> {
+    let state = app.state::<AppState>();
+    let (opacity, inside, on_top) = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        (
+            locked.persist.window_opacity,
+            locked.persist.window_inside,
+            locked.persist.window_on_top,
+        )
+    };
+    apply_window_effects(window, opacity, inside)?;
+    let _ = window.set_ignore_cursor_events(inside);
+    let _ = window.set_always_on_top(on_top);
+    Ok(())
+}
+
+fn sync_shell_visibility(app: &AppHandle, window: &WebviewWindow) {
+    let visible = app
+        .state::<AppState>()
+        .sidebar_visible
+        .load(Ordering::SeqCst);
+    let _ = window.eval(shared_shell_visibility_script(visible));
+}
+
+/// Bring `target_label` on screen and hide every other tab window. Pages are
+/// never reloaded here: a hidden webview keeps its document, so scroll
+/// position, form input and media playback survive the switch.
+fn present_tab_window(app: &AppHandle, target_label: &str, from_label: &str) -> AppResult<()> {
+    let target = ensure_browser_window(app, target_label)?;
+    let mut inherit_maximized = false;
+    if target_label != from_label {
+        if let Some(current) = app.get_webview_window(from_label) {
+            inherit_maximized = current.is_maximized().unwrap_or(false);
+            if let (Ok(position), Ok(size)) = (current.outer_position(), current.inner_size()) {
+                let _ = target.set_position(Position::Physical(position));
+                if !inherit_maximized {
+                    let _ = target.set_size(Size::Physical(size));
+                }
+            }
+        }
+    }
+    if inherit_maximized {
+        let _ = target.maximize();
+    }
+    apply_saved_window_state(app, &target)?;
+    let _ = target.unminimize();
+    target
+        .show()
+        .map_err(|err| format!("Show window failed: {err}"))?;
+    let _ = target.set_focus();
+    sync_shell_visibility(app, &target);
+    for label in browser_labels(app) {
+        if label == target_label {
+            continue;
+        }
+        if let Some(other) = app.get_webview_window(&label) {
+            let _ = other.hide();
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn switch_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppResult<String> {
     push_log(&app, "ui", "switch_tab", format!("start:{}", index));
 
-    let (target_url, idx) = {
+    let (idx, target_url, target_label, current_label) = {
         let locked = state
             .data
             .lock()
@@ -2033,7 +2387,12 @@ fn switch_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppR
         } else {
             (index as usize).min(locked.tabs.len() - 1)
         };
-        (locked.tabs[idx].url.clone(), idx)
+        (
+            idx,
+            locked.tabs[idx].url.clone(),
+            locked.tabs[idx].label.clone(),
+            locked.tabs[current_idx].label.clone(),
+        )
     };
 
     {
@@ -2044,14 +2403,7 @@ fn switch_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppR
         locked.active_tab = idx;
     }
 
-    let browser = browser_window(&app)?;
-    if !browser.is_visible().unwrap_or(true) {
-        browser
-            .show()
-            .map_err(|err| format!("Show window failed: {err}"))?;
-        let _ = browser.set_focus();
-    }
-    navigate_browser_to(&browser, &target_url)?;
+    present_tab_window(&app, &target_label, &current_label)?;
 
     update_persist(&state, |persist| {
         persist.last_url = target_url.clone();
@@ -2075,7 +2427,7 @@ fn new_tab(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppRes
         &state.home_url,
     );
 
-    {
+    let (label, current_label) = {
         let mut locked = state
             .data
             .lock()
@@ -2086,22 +2438,24 @@ fn new_tab(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppRes
             return Err(format!("Maximum tab count reached: {MAX_TAB_SESSIONS}"));
         }
 
+        let current_label = if locked.tabs.is_empty() {
+            String::new()
+        } else {
+            let current_idx = locked.active_tab.min(locked.tabs.len() - 1);
+            locked.tabs[current_idx].label.clone()
+        };
+        let seq = state.next_tab_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let label = format!("browser-{seq}");
         locked.tabs.push(BrowserTab {
-            label: BROWSER_LABEL.to_string(),
+            label: label.clone(),
             title: tab_title_from_url(&target),
             url: target.clone(),
         });
         locked.active_tab = locked.tabs.len().saturating_sub(1);
-    }
+        (label, current_label)
+    };
 
-    let browser = browser_window(&app)?;
-    if !browser.is_visible().unwrap_or(true) {
-        browser
-            .show()
-            .map_err(|err| format!("Show window failed: {err}"))?;
-        let _ = browser.set_focus();
-    }
-    navigate_browser_to(&browser, &target)?;
+    present_tab_window(&app, &label, &current_label)?;
 
     update_persist(&state, |persist| {
         persist.last_url = target.clone();
@@ -2116,48 +2470,133 @@ fn new_tab(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppRes
 fn close_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppResult<bool> {
     push_log(&app, "ui", "close_tab", format!("start:{}", index));
 
-    let next_url = {
+    struct ClosePlan {
+        removed_label: Option<String>,
+        next_label: String,
+        next_url: String,
+        reset_to_home: bool,
+        switch_now: bool,
+    }
+
+    let plan = {
         let mut locked = state
             .data
             .lock()
             .map_err(|_| "State lock poisoned".to_string())?;
 
         if locked.tabs.is_empty() {
-            state.home_url.clone()
+            ClosePlan {
+                removed_label: None,
+                next_label: BROWSER_LABEL.to_string(),
+                next_url: state.home_url.clone(),
+                reset_to_home: true,
+                switch_now: true,
+            }
         } else if locked.tabs.len() == 1 {
+            let label = locked.tabs[0].label.clone();
             locked.tabs[0].url = state.home_url.clone();
             locked.tabs[0].title = tab_title_from_url(&state.home_url);
-            locked.tabs[0].label = BROWSER_LABEL.to_string();
             locked.active_tab = 0;
-            state.home_url.clone()
+            ClosePlan {
+                removed_label: None,
+                next_label: label,
+                next_url: state.home_url.clone(),
+                reset_to_home: true,
+                switch_now: true,
+            }
         } else {
-            let current_idx = locked.active_tab.min(locked.tabs.len() - 1);
+            let active_before = locked.active_tab.min(locked.tabs.len() - 1);
             let remove_idx = if index < 0 {
-                current_idx
+                active_before
             } else {
                 (index as usize).min(locked.tabs.len() - 1)
             };
-            locked.tabs.remove(remove_idx);
-            let next_idx = if remove_idx >= locked.tabs.len() {
-                locked.tabs.len() - 1
+            let removed = locked.tabs.remove(remove_idx);
+            let len = locked.tabs.len();
+            let next_idx = if remove_idx < active_before {
+                active_before - 1
+            } else if remove_idx == active_before {
+                remove_idx.min(len - 1)
             } else {
-                remove_idx
+                active_before
             };
             locked.active_tab = next_idx;
-            locked.tabs[next_idx].label = BROWSER_LABEL.to_string();
-            locked.tabs[next_idx].url.clone()
+            ClosePlan {
+                removed_label: Some(removed.label),
+                next_label: locked.tabs[next_idx].label.clone(),
+                next_url: locked.tabs[next_idx].url.clone(),
+                reset_to_home: false,
+                switch_now: remove_idx == active_before,
+            }
         }
     };
 
-    let browser = browser_window(&app)?;
-    if !browser.is_visible().unwrap_or(true) {
-        browser
+    // Capture the outgoing window's on-screen geometry before it closes so the
+    // neighbouring tab takes over the exact same rectangle.
+    let inherited_geometry = plan
+        .removed_label
+        .as_deref()
+        .and_then(|label| app.get_webview_window(label))
+        .and_then(|window| {
+            let maximized = window.is_maximized().unwrap_or(false);
+            window
+                .outer_position()
+                .ok()
+                .zip(window.inner_size().ok())
+                .map(|(position, size)| (position, size, maximized))
+        });
+
+    if let Some(removed_label) = plan.removed_label.as_deref() {
+        if let Some(window) = app.get_webview_window(removed_label) {
+            if let Ok(mut closing) = state.closing_windows.lock() {
+                closing.insert(removed_label.to_string());
+            }
+            let _ = window.close();
+        }
+    }
+
+    if plan.switch_now {
+        let active_label = {
+            let locked = state
+                .data
+                .lock()
+                .map_err(|_| "State lock poisoned".to_string())?;
+            locked
+                .tabs
+                .get(locked.active_tab)
+                .map(|tab| tab.label.clone())
+                .unwrap_or_else(|| plan.next_label.clone())
+        };
+        let window = ensure_browser_window(&app, &active_label)?;
+        if plan.reset_to_home {
+            navigate_browser_to(&window, &plan.next_url)?;
+        }
+        apply_saved_window_state(&app, &window)?;
+        let _ = window.unminimize();
+        window
             .show()
             .map_err(|err| format!("Show window failed: {err}"))?;
-        let _ = browser.set_focus();
+        let _ = window.set_focus();
+        sync_shell_visibility(&app, &window);
+        if let Some((position, size, maximized)) = inherited_geometry {
+            let _ = window.set_position(Position::Physical(position));
+            if maximized {
+                let _ = window.maximize();
+            } else {
+                let _ = window.set_size(Size::Physical(size));
+            }
+        }
+        for label in browser_labels(&app) {
+            if label == active_label {
+                continue;
+            }
+            if let Some(other) = app.get_webview_window(&label) {
+                let _ = other.hide();
+            }
+        }
     }
-    navigate_browser_to(&browser, &next_url)?;
 
+    let next_url = plan.next_url;
     update_persist(&state, |persist| {
         persist.last_url = next_url.clone();
         persist.window_visible = true;
@@ -2257,7 +2696,14 @@ fn save_hotkeys(
         locked.hotkeys = sanitized.clone();
     }
     save_hotkeys_file(&state)?;
-    register_hotkeys(&app, &sanitized)
+    let enabled = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        locked.persist.hotkeys_enabled
+    };
+    register_hotkeys(&app, &sanitized, enabled)
 }
 
 #[tauri::command]
@@ -2271,7 +2717,14 @@ fn reset_hotkeys(app: AppHandle, state: tauri::State<AppState>) -> AppResult<Hot
         locked.hotkeys = defaults.clone();
     }
     save_hotkeys_file(&state)?;
-    register_hotkeys(&app, &defaults)?;
+    let enabled = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        locked.persist.hotkeys_enabled
+    };
+    register_hotkeys(&app, &defaults, enabled)?;
     Ok(defaults)
 }
 
@@ -2378,6 +2831,7 @@ pub fn run() {
             persist.dock_color = normalize_dock_color(&persist.dock_color).to_string();
             let (initial_tabs, initial_active_tab) =
                 build_tabs_from_persist(&mut persist, &home_url);
+            let initial_tab_count = initial_tabs.len() as u64;
 
             let hotkeys = read_json_or_default::<HotkeyConfig>(
                 &hotkeys_path,
@@ -2385,6 +2839,10 @@ pub fn run() {
                 "hotkeys_read",
                 append_runtime_log,
             )
+            // Bare-key bindings from older builds were real global shortcuts:
+            // being promoted to Ctrl+Alt+<key> is what stops them from eating
+            // ordinary typing. Runs once, gated by the schema version.
+            .migrate_typing_safe()
             .sanitize();
 
             app.manage(AppState {
@@ -2404,6 +2862,7 @@ pub fn run() {
                 move_seq: AtomicU64::new(0),
                 resize_seq: AtomicU64::new(0),
                 sidebar_visible: AtomicBool::new(true),
+                next_tab_seq: AtomicU64::new(initial_tab_count),
                 log_store: Mutex::new(Vec::new()),
             });
 
@@ -2431,18 +2890,25 @@ pub fn run() {
                     let _ = resize_to_ratio_impl(&app.handle().clone(), 0.5);
                 }
             }
+            // A saved rect can point outside every monitor (unplugged display,
+            // resolution change, geometry captured while minimized). Pull the
+            // window back instead of leaving it unreachable.
+            if let Ok(browser) = browser_window(&app.handle().clone()) {
+                let _ = ensure_window_on_screen(&browser);
+            }
             setup_tray(&app.handle().clone()).map_err(std::io::Error::other)?;
 
             {
                 let state = app.state::<AppState>();
-                let config = {
+                let (config, enabled) = {
                     let locked = state
                         .data
                         .lock()
                         .map_err(|_| std::io::Error::other("State lock poisoned"))?;
-                    locked.hotkeys.clone()
+                    (locked.hotkeys.clone(), locked.persist.hotkeys_enabled)
                 };
-                register_hotkeys(&app.handle().clone(), &config).map_err(std::io::Error::other)?;
+                register_hotkeys(&app.handle().clone(), &config, enabled)
+                    .map_err(std::io::Error::other)?;
                 save_history(&state).map_err(std::io::Error::other)?;
                 save_hotkeys_file(&state).map_err(std::io::Error::other)?;
             }
@@ -2486,6 +2952,8 @@ pub fn run() {
             open_control_panel,
             save_hotkeys,
             reset_hotkeys,
+            set_hotkeys_enabled,
+            rescue_window,
             close_app,
             open_external
         ])

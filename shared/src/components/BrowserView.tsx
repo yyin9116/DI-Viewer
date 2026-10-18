@@ -111,12 +111,13 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+            exit={{ height: 0, opacity: 0, transition: { duration: 0.14, ease: 'easeOut' } }}
+            transition={{ duration: 0.2, ease: [0.32, 0.72, 0, 1] }}
             className="pointer-events-none relative z-[2147483647] flex shrink-0 flex-col overflow-hidden"
           >
-            <div className="pointer-events-none absolute inset-x-0 top-0 h-[98px] bg-white dark:bg-black" />
-            <div className="pointer-events-auto relative z-20 flex h-14 shrink-0 items-center gap-4 border-b border-slate-200 bg-white px-4 dark:border-zinc-800 dark:bg-black">
+            {/* No opaque backdrop: the bar's own children carry the surface, so
+                collapsing (or expanding) can never leave a white strip behind. */}
+            <div className="pointer-events-auto relative z-20 flex h-14 shrink-0 items-center gap-4 border-b border-chrome-line bg-chrome px-4">
               <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
                 <div className="relative flex items-center group">
                   <button
@@ -226,7 +227,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
               axis="x"
               values={tabs}
               onReorder={onTabsReorder}
-              className="pointer-events-auto relative z-20 flex shrink-0 items-center gap-1 overflow-x-auto border-b border-slate-200 bg-white px-2 py-1.5 shadow-[0_1px_0_rgba(226,232,240,0.95)] scrollbar-hide dark:border-zinc-800 dark:bg-black dark:shadow-[0_1px_0_rgba(39,39,42,0.95)]"
+              className="pointer-events-auto relative z-20 flex shrink-0 items-center gap-1 overflow-x-auto border-b border-chrome-line bg-chrome-strip px-2 py-1.5 scrollbar-hide"
             >
               {tabs.map((tTab) => {
                 const favicon = getFaviconUrl(tTab.url);
@@ -238,14 +239,14 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                     key={tTab.id}
                     value={tTab}
                     onClick={() => {
-                      setLoadingTabId(tTab.id);
+                      // Switching is a show/hide of a live webview now, not a
+                      // navigation: no spinner, no reload, state is preserved.
                       onTabSelect(tTab.id);
-                      window.setTimeout(() => setLoadingTabId(null), 1200);
                     }}
                     className={`group flex min-w-[140px] max-w-[220px] cursor-pointer select-none items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
                       tTab.id === tab.id
-                        ? 'border border-slate-200 bg-white text-slate-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-800 dark:text-white'
-                        : 'text-slate-500 hover:bg-slate-200/50 dark:hover:bg-zinc-800/50'
+                        ? 'bg-tab-active text-slate-900 shadow-[0_0_0_1px_var(--color-tab-active-line),0_1px_2px_rgba(15,23,42,0.10)] dark:text-white'
+                        : 'text-tab-idle hover:bg-black/[0.06] dark:hover:bg-white/[0.07]'
                     }`}
                   >
                     {isLoading ? (

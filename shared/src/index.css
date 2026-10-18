@@ -18,6 +18,30 @@
   --color-danger-200: #fecdd3; /* light tag surface */
   --color-danger-300: #fda4af; /* dark-mode danger text */
   --color-danger-700: #be123c; /* record button / light danger text */
+
+  /*
+   * Shell chrome. The control bar and the tab strip are painted *over* the
+   * page, so their surfaces have to be explicit tokens instead of ad-hoc
+   * white/black: the tab strip sits one step off the toolbar so the active
+   * tab reads as a raised surface instead of "white on white".
+   * Dark values are overridden on `.dark` below (utilities compile to
+   * var(--color-…), so the override cascades).
+   */
+  --color-chrome: #ffffff;
+  --color-chrome-strip: #e8ecf1;
+  --color-chrome-line: #d8dee7;
+  --color-tab-active: #ffffff;
+  --color-tab-active-line: #cbd5e1;
+  --color-tab-idle: #5b6678;
+}
+
+.dark {
+  --color-chrome: #000000;
+  --color-chrome-strip: #121216;
+  --color-chrome-line: #2a2a30;
+  --color-tab-active: #27272a;
+  --color-tab-active-line: #3f3f46;
+  --color-tab-idle: #a1a1aa;
 }
 
 :root {
