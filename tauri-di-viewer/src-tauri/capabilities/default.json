@@ -4,7 +4,8 @@
   "remote": {
     "urls": [
       "http://*",
-      "https://*"
+      "https://*",
+      "file://*"
     ]
   },
   "windows": [

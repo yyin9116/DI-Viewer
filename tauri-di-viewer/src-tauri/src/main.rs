@@ -57,7 +57,6 @@ const START_PAGE_FIT_WIDTH: f64 = 1220.0;
 const START_PAGE_FIT_HEIGHT: f64 = 760.0;
 const SHARED_DIST_CSS: &str = include_str!("../../../shared/dist/assets/app.css");
 const SHARED_DIST_JS: &str = include_str!("../../../shared/dist/assets/app.js");
-const EMBEDDED_HOME_HTML: &str = include_str!("../../../lucid-start-page/index.html");
 const DESKTOP_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
 #[allow(dead_code)]
 const PAGE_NAV_PATCH_JS: &str = r##"
@@ -323,89 +322,27 @@ fn normalize_url_with_home(url: &str, home_url: &str) -> String {
     }
 }
 
-/// Materialize the compile-time-embedded start page into the app data dir so
-/// the home URL can stay a `file://` URL (bookmarks/history keep working) even
-/// for the single-file portable build, which ships with no external resources.
-fn ensure_embedded_home(app: &AppHandle) -> Option<PathBuf> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .ok()?
-        .join("embedded")
-        .join("lucid-start-page");
-    let path = dir.join("index.html");
-    let needs_write = match fs::read_to_string(&path) {
-        Ok(current) => current != EMBEDDED_HOME_HTML,
-        Err(_) => true,
-    };
-    if needs_write {
-        fs::create_dir_all(&dir).ok()?;
-        fs::write(&path, EMBEDDED_HOME_HTML).ok()?;
+/// The start page is served through Tauri's application protocol (embedded in
+/// the frontend dist) so the injected shell gets a real HTTP origin. `file://`
+/// pages cannot host the shell: the IPC layer rejects their `null` origin with
+/// "Origin header is not a valid URL".
+fn app_protocol_home_url() -> String {
+    if cfg!(windows) {
+        format!("http://tauri.localhost/{LOCAL_HOME_RESOURCE}")
+    } else {
+        format!("tauri://localhost/{LOCAL_HOME_RESOURCE}")
     }
-    Some(path)
 }
 
 fn resolve_home_url(app: &AppHandle) -> String {
+    let _ = app; // signature kept for existing callers
     if let Ok(dev_home) = std::env::var("DI_VIEWER_HOME_URL") {
         let trimmed = dev_home.trim();
         if !trimmed.is_empty() && Url::parse(trimmed).is_ok() {
             return trimmed.to_string();
         }
     }
-
-    let mut candidates = Vec::new();
-
-    // Prefer workspace/local page first so design tweaks are reflected immediately in dev.
-    if let Ok(current_dir) = std::env::current_dir() {
-        candidates.push(current_dir.join("lucid-start-page").join("index.html"));
-        candidates.push(
-            current_dir
-                .join("..")
-                .join("lucid-start-page")
-                .join("index.html"),
-        );
-        candidates.push(
-            current_dir
-                .join("..")
-                .join("..")
-                .join("lucid-start-page")
-                .join("index.html"),
-        );
-    }
-
-    candidates.push(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("lucid-start-page")
-            .join("index.html"),
-    );
-
-    // Embedded start page (portable/single-file builds have no packaged
-    // resources); materialized into the app data dir on first run.
-    if let Some(embedded) = ensure_embedded_home(app) {
-        candidates.push(embedded);
-    }
-
-    // Fallback to packaged resources.
-    if let Ok(path) = app.path().resource_dir() {
-        candidates.push(path.join(LOCAL_HOME_RESOURCE));
-        candidates.push(path.join("resources").join(LOCAL_HOME_RESOURCE));
-        candidates.push(path.join("index.html"));
-    }
-
-    for candidate in candidates {
-        if !candidate.exists() {
-            continue;
-        }
-        if let Ok(absolute) = candidate.canonicalize() {
-            if let Ok(url) = Url::from_file_path(&absolute) {
-                return url.to_string();
-            }
-        }
-    }
-
-    LEGACY_HOME_URL.to_string()
+    app_protocol_home_url()
 }
 
 fn normalize_bookmark(url: &str, title: &str, home_url: &str) -> AppResult<BookmarkItem> {
@@ -861,39 +798,62 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     Object.defineProperty(window, "__diviewer_bridge", { value: window.__diviewer_bridge, writable: false, configurable: false });
   } catch (_e) {}
 
+  // Initialization scripts run before the document exists: documentElement and
+  // body are still null at that point, so DOM setup must defer to
+  // DOMContentLoaded or the shell dies with a TypeError and never mounts.
+  const setupShellDom = () => {
+    let root = document.getElementById('__diviewer_shared_root__');
+    if (!root) {
+      root = document.createElement('div');
+      root.id = '__diviewer_shared_root__';
+      (document.documentElement || document.body).appendChild(root);
+    }
+    root.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;overflow:visible;pointer-events:none;background:transparent;z-index:2147483646;display:block;';
+    if (!root.hasAttribute('data-sidebar-visible')) {
+      root.setAttribute('data-sidebar-visible', 'true');
+    }
 
-  let root = document.getElementById('__diviewer_shared_root__');
-  if (!root) {
-    root = document.createElement('div');
-    root.id = '__diviewer_shared_root__';
-    (document.documentElement || document.body).appendChild(root);
-  }
-  root.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;overflow:visible;pointer-events:none;background:transparent;z-index:2147483646;display:block;';
-  if (!root.hasAttribute('data-sidebar-visible')) {
-    root.setAttribute('data-sidebar-visible', 'true');
-  }
+    const shadow = root.shadowRoot || root.attachShadow({ mode: 'open' });
+    if (!shadow.getElementById('__diviewer_shared_mount__')) {
+      const mount = document.createElement('div');
+      mount.id = '__diviewer_shared_mount__';
+      mount.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;background:transparent;';
+      shadow.appendChild(mount);
+    }
 
-  const shadow = root.shadowRoot || root.attachShadow({ mode: 'open' });
-  if (!shadow.getElementById('__diviewer_shared_mount__')) {
-    const mount = document.createElement('div');
-    mount.id = '__diviewer_shared_mount__';
-    mount.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;background:transparent;';
-    shadow.appendChild(mount);
-  }
+    // Dynamically inserted <style> elements are not parsed by this WebView2
+    // build (style.sheet stays null even for attached elements), so the shell
+    // CSS must go through a constructable stylesheet. Fallback to <style> for
+    // engines without CSSStyleSheet support.
+    const cssText = `__DIVIEWER_CSS__`;
+    try {
+      if (!shadow.adoptedStyleSheets.length) {
+        const sheet = new CSSStyleSheet();
+        sheet.replaceSync(cssText);
+        shadow.adoptedStyleSheets = [sheet];
+      }
+    } catch (_e) {
+      if (!shadow.getElementById('__diviewer_shared_css__')) {
+        const style = document.createElement('style');
+        style.id = '__diviewer_shared_css__';
+        style.textContent = cssText;
+        shadow.appendChild(style);
+      }
+    }
 
-  if (!shadow.getElementById('__diviewer_shared_css__')) {
-    const style = document.createElement('style');
-    style.id = '__diviewer_shared_css__';
-    style.textContent = `__DIVIEWER_CSS__`;
-    shadow.appendChild(style);
-  }
+    if (!window.__DIVIEWER_SHARED_BOOTSTRAPPED__) {
+      window.__DIVIEWER_SHARED_BOOTSTRAPPED__ = true;
+      __DIVIEWER_JS__
+    }
 
-  if (!window.__DIVIEWER_SHARED_BOOTSTRAPPED__) {
-    window.__DIVIEWER_SHARED_BOOTSTRAPPED__ = true;
-    __DIVIEWER_JS__
-  }
+    window.dispatchEvent(new CustomEvent('diviewer:sync'));
+  };
 
-  window.dispatchEvent(new CustomEvent('diviewer:sync'));
+  if (document.documentElement) {
+    setupShellDom();
+  } else {
+    document.addEventListener('DOMContentLoaded', () => setupShellDom(), { once: true });
+  }
 })();
 "##;
 
@@ -1618,10 +1578,8 @@ fn create_browser_tab_window(
     initial_url: &str,
     visible: bool,
 ) -> AppResult<WebviewWindow> {
-    let url = parse_url(&normalize_url_with_home(
-        initial_url,
-        &app.state::<AppState>().home_url,
-    ))?;
+    let home_url = app.state::<AppState>().home_url.clone();
+    let url = parse_url(&normalize_url_with_home(initial_url, &home_url))?;
     let app_for_popup = app.clone();
     let app_for_load = app.clone();
     let label_for_popup = label.to_string();
@@ -1630,7 +1588,15 @@ fn create_browser_tab_window(
 
     let shell_script = shared_shell_script(app)?;
 
-    let browser = WebviewWindowBuilder::new(app, label.to_string(), WebviewUrl::External(url))
+    // The home page must load through the application protocol (WebviewUrl::App)
+    // so the injected shell gets a valid IPC origin.
+    let webview_url = if url.as_str() == home_url {
+        WebviewUrl::App(PathBuf::from(LOCAL_HOME_RESOURCE))
+    } else {
+        WebviewUrl::External(url)
+    };
+
+    let browser = WebviewWindowBuilder::new(app, label.to_string(), webview_url)
         .title(ui_text(
             ui_lang_zh,
             "DI-Viewer Browser",

@@ -20,9 +20,6 @@
   },
   "bundle": {
     "active": true,
-    "resources": [
-      "resources/lucid-start-page"
-    ],
     "targets": [
       "nsis",
       "msi",
