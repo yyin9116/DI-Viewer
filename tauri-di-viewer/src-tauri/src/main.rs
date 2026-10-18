@@ -307,6 +307,12 @@ fn normalize_url_with_home(url: &str, home_url: &str) -> String {
     if trimmed.is_empty() || trimmed == "about:blank" || is_legacy_home_url(trimmed) {
         return home_url.to_string();
     }
+    // Any URL that points at the start page (whatever host it was recorded
+    // with — old dev-server homes like http://127.0.0.1:17333/... must not
+    // survive a session restore) collapses to the current home URL.
+    if trimmed.contains("/lucid-start-page/index.html") {
+        return home_url.to_string();
+    }
     if trimmed.starts_with("http://")
         || trimmed.starts_with("https://")
         || trimmed.starts_with("file://")
