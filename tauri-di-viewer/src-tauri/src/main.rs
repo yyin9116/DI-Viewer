@@ -707,8 +707,18 @@ fn escape_js_template_literal(input: &str) -> String {
 fn shared_dist_candidates(app: &AppHandle, relative_path: &str) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
-        candidates.push(resource_dir.join("shared").join("dist").join(relative_path));
-        candidates.push(resource_dir.join("dist").join(relative_path));
+        // Bundlers (NSIS/WiX) flatten each `..` component of a resource path
+        // into an `_up_` directory, so `../../shared/dist` installs to
+        // <resource_dir>/_up_/_up_/shared/dist. Probe the clean layouts first,
+        // then the flattened ones, so dev, MSI and NSIS installs all resolve.
+        for base in [
+            resource_dir.clone(),
+            resource_dir.join("_up_"),
+            resource_dir.join("_up_").join("_up_"),
+        ] {
+            candidates.push(base.join("shared").join("dist").join(relative_path));
+            candidates.push(base.join("dist").join(relative_path));
+        }
     }
     candidates.push(
         Path::new(env!("CARGO_MANIFEST_DIR"))
