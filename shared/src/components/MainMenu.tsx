@@ -22,6 +22,7 @@ import {
   Check
 } from 'lucide-react';
 import type { HotkeyConfig } from '../types';
+import { bindingHasModifier, bindingIsTypingSafe } from '../lib/inAppHotkeys';
 
 type UILang = 'zh' | 'en';
 type MenuView = 'appearance' | 'window' | 'shortcuts' | 'recovery';
@@ -92,9 +93,13 @@ const TEXT = {
     recording: '按下组合键…',
     record: '设置',
     cancel: 'Esc 取消',
-    modifierRequired: '需要修饰键：全局限定不能用单个字母或数字（F1–F24 除外）',
+    modifierRequired: '这个动作在窗口隐藏或穿透时也要能用，必须带修饰键',
     duplicate: '与上方绑定重复',
-    shortcutHint: '全局快捷键独立于应用焦点；单键绑定会打断任何程序的正常打字，因此必须带 Ctrl / Alt / Shift。',
+    scopeGlobal: '全局',
+    scopeInApp: '应用内',
+    scopeRequired: '需全局',
+    scopeNote: '「应用内」= 只有本窗口激活时才生效；焦点在输入框、输入法正在拼写、或按着 Ctrl/Alt 时自动跳过，不会被系统抢走。',
+    shortcutHint: '裸键（字母、数字、`）只在本应用内生效，不再注册成系统热键，因此不会打断任何程序的打字；需要「窗口隐藏/穿透时也能按」的动作保留 Ctrl+Alt 组合。',
     shortcutSaved: '已保存并重新注册',
     reset: '恢复默认',
     save: '保存',
@@ -152,9 +157,13 @@ const TEXT = {
     recording: 'Press a combo…',
     record: 'Set',
     cancel: 'Esc to cancel',
-    modifierRequired: 'A modifier is required: global shortcuts cannot be a bare letter or digit (F1–F24 excepted)',
+    modifierRequired: 'This action must work while the window is hidden or click-through, so it needs a modifier',
     duplicate: 'Duplicate of a binding above',
-    shortcutHint: 'Global shortcuts fire regardless of focus. A bare key would swallow normal typing everywhere, so Ctrl / Alt / Shift is mandatory.',
+    scopeGlobal: 'Global',
+    scopeInApp: 'In-app',
+    scopeRequired: 'Needs mod',
+    scopeNote: 'In-app = only while this window is active. It is skipped while a text field has focus, while an IME composition is open, or while Ctrl/Alt is held — so nothing is stolen from other apps.',
+    shortcutHint: 'Bare keys (letters, digits, `) stay inside the viewer and are never registered system-wide, so they cannot break typing elsewhere. Actions that must work while the window is hidden keep a Ctrl+Alt combo.',
     shortcutSaved: 'Saved and re-registered',
     reset: 'Reset',
     save: 'Save',
@@ -248,12 +257,9 @@ function composeHotkey(event: React.KeyboardEvent<HTMLInputElement>): string | n
   return parts.join('+');
 }
 
-/** Global shortcuts must not steal plain typing: a modifier or an F-key. */
-function isTypingSafe(combo: string): boolean {
-  const parts = combo.split('+').map((part) => part.trim());
-  if (parts.some((part) => MODIFIER_PREFIXES.includes(part))) return true;
-  return parts.some((part) => /^F([1-9]|1\d|2[0-4])$/.test(part));
-}
+/** Bindings that must keep working while another app is focused (or while the
+ *  window is hidden / click-through), so they cannot be modifier-less. */
+const GLOBAL_REQUIRED: Array<keyof HotkeyConfig> = ['toggleShowHide', 'insideMode', 'closeWindow'];
 
 /** Render `Ctrl+Alt+R` as three discrete keycaps. */
 function ComboKeys({ combo }: { combo: string }) {
@@ -360,7 +366,7 @@ export function MainMenu({
 
     const next = composeHotkey(event);
     if (!next) return;
-    if (!isTypingSafe(next)) {
+    if (!bindingIsTypingSafe(next) && GLOBAL_REQUIRED.includes(key)) {
       setRecordError(t.modifierRequired);
       return;
     }
@@ -593,8 +599,19 @@ export function MainMenu({
                           index === hotkeyKeys.length - 1 ? '' : 'border-b border-slate-100 dark:border-zinc-800/80'
                         }`}
                       >
-                        <span className="w-[108px] shrink-0 text-[11px] text-slate-500 dark:text-slate-400">
-                          {labels[key]}
+                        <span className="w-[96px] shrink-0">
+                          <span className="block truncate text-[11px] text-slate-500 dark:text-slate-400">
+                            {labels[key]}
+                          </span>
+                          <span
+                            className={`mt-0.5 block text-[9px] font-medium ${
+                              bindingHasModifier(editingHotkeys[key])
+                                ? 'text-slate-400 dark:text-zinc-500'
+                                : 'text-brand-700 dark:text-brand-300'
+                            }`}
+                          >
+                            {bindingHasModifier(editingHotkeys[key]) ? t.scopeGlobal : t.scopeInApp}
+                          </span>
                         </span>
                         <input
                           ref={(node) => {
@@ -628,6 +645,7 @@ export function MainMenu({
               </Card>
 
               <p className="px-1 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.shortcutHint}</p>
+              <p className="px-1 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.scopeNote}</p>
 
               <div className="flex items-center justify-end gap-2">
                 <button

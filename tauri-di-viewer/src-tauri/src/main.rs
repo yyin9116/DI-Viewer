@@ -3,8 +3,8 @@
 mod persistence;
 
 use persistence::{
-    current_timestamp_ms, read_json_or_default, write_json, BookmarkItem, HotkeyConfig,
-    PersistedState,
+    binding_is_global, current_timestamp_ms, read_json_or_default, write_json, BookmarkItem,
+    HotkeyConfig, PersistedState,
 };
 use serde::Serialize;
 use std::{
@@ -1710,6 +1710,14 @@ fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig, enabled: bool) -> Ap
             push_log(app, "native", "register_hotkeys", format!("reserved:{name}"));
             continue;
         }
+        if !binding_is_global(key) {
+            // No modifier -> registered nowhere at the OS level. The shell
+            // matches it on keydown and suppresses it while an IME composition
+            // is open or an editable element has focus, so bare keys stay
+            // usable inside the viewer without touching other apps' typing.
+            push_log(app, "native", "register_hotkeys", format!("in_app:{name}={key}"));
+            continue;
+        }
         let result = manager.on_shortcut(key, move |app, _shortcut, event| {
             if event.state == ShortcutState::Pressed {
                 let _ = run_hotkey_action(app, action);
@@ -2841,8 +2849,10 @@ pub fn run() {
             )
             // Bare-key bindings from older builds were real global shortcuts:
             // being promoted to Ctrl+Alt+<key> is what stops them from eating
-            // ordinary typing. Runs once, gated by the schema version.
+            // ordinary typing. The second step then restores the scoped model
+            // (modifier-less = in-app only) for configs nobody customised.
             .migrate_typing_safe()
+            .migrate_scoped()
             .sanitize();
 
             app.manage(AppState {

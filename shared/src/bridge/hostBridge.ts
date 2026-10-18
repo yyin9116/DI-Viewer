@@ -22,15 +22,15 @@ declare global {
 }
 
 const defaultHotkeys: HotkeyConfig = {
-  togglePlayPause: 'Ctrl+Alt+Space',
-  toggleRecording: 'Ctrl+Alt+R',
+  togglePlayPause: 'Backquote',
+  toggleRecording: 'R',
   toggleShowHide: 'Ctrl+Alt+H',
   insideMode: 'Ctrl+Alt+P',
-  videoBackward: 'Ctrl+Alt+J',
-  videoForward: 'Ctrl+Alt+L',
-  decreaseOpacity: 'Ctrl+Alt+9',
-  increaseOpacity: 'Ctrl+Alt+0',
-  requestFullScreen: 'Ctrl+Alt+F',
+  videoBackward: '5',
+  videoForward: '6',
+  decreaseOpacity: '7',
+  increaseOpacity: '8',
+  requestFullScreen: 'O',
   closeWindow: 'Ctrl+Q'
 };
 

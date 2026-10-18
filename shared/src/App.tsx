@@ -4,6 +4,7 @@ import { Sidebar } from './components/Sidebar';
 import { BrowserView } from './components/BrowserView';
 import { MainMenu } from './components/MainMenu';
 import { hostBridge } from './bridge/hostBridge';
+import { matchInAppHotkey } from './lib/inAppHotkeys';
 import type { FrontendState, HostSnapshot, HotkeyConfig } from './types';
 export interface Tab {
   id: string;
@@ -32,8 +33,8 @@ const defaultState: FrontendState = {
   hotkeys: {
     togglePlayPause: 'Backquote',
     toggleRecording: 'R',
-    toggleShowHide: '0',
-    insideMode: 'P',
+    toggleShowHide: 'Ctrl+Alt+H',
+    insideMode: 'Ctrl+Alt+P',
     videoBackward: '5',
     videoForward: '6',
     decreaseOpacity: '7',
@@ -354,6 +355,60 @@ export default function App() {
       return hostBridge.rescueWindow();
     }, 'rescue_window', 3000);
   };
+  const applyOpacityPercent = (value: number) => {
+    const clamped = Math.max(20, Math.min(100, Math.round(value)));
+    const alpha = clamped / 100;
+    setSnapshot((current) => ({
+      ...current,
+      state: { ...current.state, opacity: alpha }
+    }));
+    void run(async () => {
+      await hostBridge.setOpacity(alpha);
+      await hostBridge.setShellOpacity(alpha);
+      return null;
+    }, 'set_opacity', 3000);
+  };
+  /**
+   * In-app layer of the shortcut system. Bare bindings (R / 5 / 6 / 7 / 8 / O …)
+   * never reach RegisterHotKey: they are matched here, which lets us skip IME
+   * composition and focused text fields instead of swallowing the keystroke
+   * system-wide.
+   */
+  useEffect(() => {
+    if (!snapshot.state.hotkeysEnabled) return;
+    const hotkeys = snapshot.state.hotkeys;
+    const currentOpacity = snapshot.state.opacity;
+    let composing = false;
+    const handleCompositionStart = () => {
+      composing = true;
+    };
+    const handleCompositionEnd = () => {
+      composing = false;
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const action = matchInAppHotkey(hotkeys, event, { composing });
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (action === 'increase_opacity' || action === 'decrease_opacity') {
+        const step = action === 'increase_opacity' ? 10 : -10;
+        applyOpacityPercent(currentOpacity * 100 + step);
+        return;
+      }
+      void run(() => hostBridge.videoAction(action), `inapp:${action}`, 2500);
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    document.addEventListener('compositionstart', handleCompositionStart, true);
+    document.addEventListener('compositionend', handleCompositionEnd, true);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true);
+      document.removeEventListener('compositionstart', handleCompositionStart, true);
+      document.removeEventListener('compositionend', handleCompositionEnd, true);
+    };
+    // `run` is recreated per render; the effect only needs to re-arm when the
+    // binding table, the master switch or the opacity baseline changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot.state.hotkeysEnabled, snapshot.state.hotkeys, snapshot.state.opacity]);
   const handleBookmarkCurrent = () => {
     const url = activeTab.url?.trim();
     if (!url) return;
@@ -458,19 +513,7 @@ export default function App() {
                 <MainMenu
                 onClose={() => setIsMenuOpen(false)}
                 opacity={Math.round(snapshot.state.opacity * 100)}
-                setOpacity={(next) => {
-                  const value = Math.max(20, Math.min(100, next));
-                  const alpha = value / 100;
-                  setSnapshot((current) => ({
-                    ...current,
-                    state: { ...current.state, opacity: alpha }
-                  }));
-                  void run(async () => {
-                    await hostBridge.setOpacity(alpha);
-                    await hostBridge.setShellOpacity(alpha);
-                    return null;
-                  }, 'set_opacity', 3000);
-                }}
+                setOpacity={applyOpacityPercent}
                 isDarkMode={isDarkMode}
                 onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
                 onToggleSidebar={() => void runAndCloseMenu(() => hostBridge.toggleSidebar(), 2500)}

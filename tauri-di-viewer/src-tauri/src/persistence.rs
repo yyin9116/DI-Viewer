@@ -8,7 +8,7 @@ use std::{
 
 use crate::{AppResult, LEGACY_HOME_URL};
 
-pub(crate) const PERSISTENCE_SCHEMA_VERSION: u32 = 2;
+pub(crate) const PERSISTENCE_SCHEMA_VERSION: u32 = 3;
 
 pub(crate) fn current_timestamp_ms() -> u128 {
     SystemTime::now()
@@ -50,22 +50,47 @@ pub(crate) struct HotkeyConfig {
 
 impl Default for HotkeyConfig {
     fn default() -> Self {
-        // Every binding carries a modifier on purpose. These are *global*
-        // shortcuts: a bare `R` or `0` would be swallowed while the user types
-        // in any other application, which is exactly the bug this replaced.
+        // Two classes of binding, told apart by the presence of a modifier:
+        //  - with a modifier  -> system-wide (RegisterHotKey). Needed for the
+        //    actions you must reach while another app is focused or the window
+        //    is hidden: show/hide, click-through, quit.
+        //  - without a modifier -> in-app only. The shell matches them on
+        //    keydown and skips IME composition and editable targets, so `R` or
+        //    `5` behave like a media key inside the viewer and are never
+        //    swallowed in other applications.
         Self {
             schema_version: PERSISTENCE_SCHEMA_VERSION,
-            toggle_play_pause: "Ctrl+Alt+Space".to_string(),
-            toggle_recording: "Ctrl+Alt+R".to_string(),
+            toggle_play_pause: "Backquote".to_string(),
+            toggle_recording: "R".to_string(),
             toggle_show_hide: "Ctrl+Alt+H".to_string(),
             inside_mode: "Ctrl+Alt+P".to_string(),
-            video_backward: "Ctrl+Alt+J".to_string(),
-            video_forward: "Ctrl+Alt+L".to_string(),
-            decrease_opacity: "Ctrl+Alt+9".to_string(),
-            increase_opacity: "Ctrl+Alt+0".to_string(),
-            request_full_screen: "Ctrl+Alt+F".to_string(),
+            video_backward: "5".to_string(),
+            video_forward: "6".to_string(),
+            decrease_opacity: "7".to_string(),
+            increase_opacity: "8".to_string(),
+            request_full_screen: "O".to_string(),
             close_window: "Ctrl+Q".to_string(),
         }
+    }
+}
+
+/// The defaults shipped by 1.1.21 (every binding forced to Ctrl+Alt+*).
+/// Used to recognise "the user never touched this" when migrating to the
+/// scoped model, so an untouched config gets the better defaults back while a
+/// deliberately chosen binding is preserved.
+fn v2_defaults() -> HotkeyConfig {
+    HotkeyConfig {
+        schema_version: 2,
+        toggle_play_pause: "Ctrl+Alt+Space".to_string(),
+        toggle_recording: "Ctrl+Alt+R".to_string(),
+        toggle_show_hide: "Ctrl+Alt+H".to_string(),
+        inside_mode: "Ctrl+Alt+P".to_string(),
+        video_backward: "Ctrl+Alt+J".to_string(),
+        video_forward: "Ctrl+Alt+L".to_string(),
+        decrease_opacity: "Ctrl+Alt+9".to_string(),
+        increase_opacity: "Ctrl+Alt+0".to_string(),
+        request_full_screen: "Ctrl+Alt+F".to_string(),
+        close_window: "Ctrl+Q".to_string(),
     }
 }
 
@@ -76,6 +101,12 @@ fn has_modifier(value: &str) -> bool {
             "ctrl" | "control" | "alt" | "shift" | "meta" | "cmd" | "command" | "super"
         )
     })
+}
+
+/// A binding is registered system-wide only when it carries a modifier.
+/// Modifier-less bindings are handled inside the shell instead.
+pub(crate) fn binding_is_global(value: &str) -> bool {
+    has_modifier(value)
 }
 
 /// Function keys and dedicated media keys do not produce text, so they are the
@@ -94,12 +125,13 @@ fn is_text_free_key(value: &str) -> bool {
 }
 
 impl HotkeyConfig {
-    /// Builds that shipped bare-key defaults registered them as global
-    /// shortcuts and stole those keystrokes from every text field. Promote any
-    /// modifier-less, text-producing binding to `Ctrl+Alt+<key>` once, gated on
-    /// the stored schema version so a deliberate later choice is never rewritten.
+    /// v1 -> v2: builds that shipped bare-key defaults registered them as
+    /// global shortcuts and stole those keystrokes from every text field.
+    /// Promote any modifier-less, text-producing binding to `Ctrl+Alt+<key>`
+    /// once, gated on the stored schema version so a deliberate later choice
+    /// is never rewritten.
     pub(crate) fn migrate_typing_safe(mut self) -> Self {
-        if self.schema_version >= PERSISTENCE_SCHEMA_VERSION {
+        if self.schema_version >= 2 {
             return self;
         }
         let promote = |value: String| -> String {
@@ -119,8 +151,101 @@ impl HotkeyConfig {
         self.increase_opacity = promote(self.increase_opacity);
         self.request_full_screen = promote(self.request_full_screen);
         self.close_window = promote(self.close_window);
+        self.schema_version = 2;
+        self
+    }
+
+    /// v2 -> v3: 1.1.21 bluntly forced every binding to `Ctrl+Alt+*`. Restore
+    /// the scoped defaults (bare keys are in-app only from now on) but only for
+    /// bindings that still equal a value no user could have typed on purpose —
+    /// the v2 defaults, or the v1 defaults after their v1 -> v2 promotion.
+    /// A deliberately customised binding keeps its value.
+    pub(crate) fn migrate_scoped(mut self) -> Self {
+        if self.schema_version >= PERSISTENCE_SCHEMA_VERSION {
+            return self;
+        }
+        let old_v2 = v2_defaults();
+        let old_v1 = v1_promoted_defaults();
+        let new = Self::default();
+        let restore = |current: &mut String, was: [&str; 2], now: &str| {
+            let trimmed = current.trim();
+            if was
+                .iter()
+                .any(|candidate| trimmed.eq_ignore_ascii_case(candidate))
+            {
+                *current = now.to_string();
+            }
+        };
+        restore(
+            &mut self.toggle_play_pause,
+            [&old_v2.toggle_play_pause, &old_v1.toggle_play_pause],
+            &new.toggle_play_pause,
+        );
+        restore(
+            &mut self.toggle_recording,
+            [&old_v2.toggle_recording, &old_v1.toggle_recording],
+            &new.toggle_recording,
+        );
+        restore(
+            &mut self.toggle_show_hide,
+            [&old_v2.toggle_show_hide, &old_v1.toggle_show_hide],
+            &new.toggle_show_hide,
+        );
+        restore(
+            &mut self.inside_mode,
+            [&old_v2.inside_mode, &old_v1.inside_mode],
+            &new.inside_mode,
+        );
+        restore(
+            &mut self.video_backward,
+            [&old_v2.video_backward, &old_v1.video_backward],
+            &new.video_backward,
+        );
+        restore(
+            &mut self.video_forward,
+            [&old_v2.video_forward, &old_v1.video_forward],
+            &new.video_forward,
+        );
+        restore(
+            &mut self.decrease_opacity,
+            [&old_v2.decrease_opacity, &old_v1.decrease_opacity],
+            &new.decrease_opacity,
+        );
+        restore(
+            &mut self.increase_opacity,
+            [&old_v2.increase_opacity, &old_v1.increase_opacity],
+            &new.increase_opacity,
+        );
+        restore(
+            &mut self.request_full_screen,
+            [&old_v2.request_full_screen, &old_v1.request_full_screen],
+            &new.request_full_screen,
+        );
+        restore(
+            &mut self.close_window,
+            [&old_v2.close_window, &old_v1.close_window],
+            &new.close_window,
+        );
         self.schema_version = PERSISTENCE_SCHEMA_VERSION;
         self
+    }
+}
+
+/// The v1 defaults (bare keys) after their v1 -> v2 promotion, so the v2 -> v3
+/// migration can recognise a config that was itself auto-generated by v1.
+fn v1_promoted_defaults() -> HotkeyConfig {
+    HotkeyConfig {
+        schema_version: 2,
+        toggle_play_pause: "Ctrl+Alt+Backquote".to_string(),
+        toggle_recording: "Ctrl+Alt+R".to_string(),
+        toggle_show_hide: "Ctrl+Alt+0".to_string(),
+        inside_mode: "Ctrl+Alt+P".to_string(),
+        video_backward: "Ctrl+Alt+5".to_string(),
+        video_forward: "Ctrl+Alt+6".to_string(),
+        decrease_opacity: "Ctrl+Alt+7".to_string(),
+        increase_opacity: "Ctrl+Alt+8".to_string(),
+        request_full_screen: "Ctrl+Alt+O".to_string(),
+        close_window: "Ctrl+Q".to_string(),
     }
 }
 
@@ -424,11 +549,64 @@ mod tests {
         assert_eq!(legacy.toggle_play_pause, "Ctrl+Alt+Backquote");
         // Modifier-carrying bindings and function keys are left alone.
         assert_eq!(legacy.close_window, "Ctrl+Q");
+        // `sanitize` stamps the current schema version on whatever it returns.
         assert_eq!(legacy.schema_version, PERSISTENCE_SCHEMA_VERSION);
 
         // Already-migrated configs must not be rewritten again.
         let again = legacy.clone().migrate_typing_safe();
         assert_eq!(again.toggle_recording, "Ctrl+Alt+R");
+    }
+
+    #[test]
+    fn v1_config_ends_up_scoped_after_full_migration() {
+        // Same v1 file as shipped by 1.1.20, migrated all the way to v3.
+        let scoped = HotkeyConfig {
+            schema_version: 1,
+            toggle_play_pause: "Backquote".to_string(),
+            toggle_recording: "R".to_string(),
+            toggle_show_hide: "0".to_string(),
+            inside_mode: "P".to_string(),
+            video_backward: "5".to_string(),
+            video_forward: "6".to_string(),
+            decrease_opacity: "7".to_string(),
+            increase_opacity: "8".to_string(),
+            request_full_screen: "O".to_string(),
+            close_window: "Ctrl+Q".to_string(),
+        }
+        .migrate_typing_safe()
+        .migrate_scoped()
+        .sanitize();
+
+        assert_eq!(scoped.schema_version, PERSISTENCE_SCHEMA_VERSION);
+        // Bare media/navigation keys are back, but they are in-app only now.
+        assert_eq!(scoped.toggle_recording, "R");
+        assert_eq!(scoped.video_backward, "5");
+        assert_eq!(scoped.request_full_screen, "O");
+        assert!(!binding_is_global(&scoped.toggle_recording));
+        // The actions you must reach while the window is hidden stay global.
+        assert_eq!(scoped.toggle_show_hide, "Ctrl+Alt+H");
+        assert!(binding_is_global(&scoped.toggle_show_hide));
+        assert_eq!(scoped.inside_mode, "Ctrl+Alt+P");
+        assert!(binding_is_global(&scoped.inside_mode));
+        assert_eq!(scoped.close_window, "Ctrl+Q");
+        assert!(binding_is_global(&scoped.close_window));
+    }
+
+    #[test]
+    fn v2_defaults_are_restored_but_custom_bindings_survive() {
+        let config = HotkeyConfig {
+            schema_version: 2,
+            // Untouched 1.1.21 default -> restored to the scoped default.
+            toggle_play_pause: "Ctrl+Alt+Space".to_string(),
+            // Deliberate custom binding -> preserved verbatim.
+            toggle_recording: "Ctrl+Shift+M".to_string(),
+            ..v2_defaults()
+        }
+        .migrate_scoped();
+
+        assert_eq!(config.toggle_play_pause, "Backquote");
+        assert_eq!(config.toggle_recording, "Ctrl+Shift+M");
+        assert_eq!(config.video_forward, "6");
     }
 
     #[test]
