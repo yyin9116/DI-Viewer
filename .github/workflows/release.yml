@@ -96,17 +96,12 @@ jobs:
           }
           Copy-Item -Path $msi.FullName -Destination "release-assets/DI-Viewer-${{ github.ref_name }}-windows-x64.msi"
 
-          # Portable build: raw exe + resources laid out flat (the Rust-side
-          # resource probe covers <exe_dir>/shared/dist and resources/...).
+          # Portable ("green") build: the exe is fully self-contained — shared
+          # UI assets and the start page are embedded at compile time, so a
+          # bare copy of the exe runs without any external files.
           $exe = "tauri-di-viewer/src-tauri/target/${{ matrix.rust_target }}/release/tauri-di-viewer.exe"
           if (-not (Test-Path $exe)) { throw "portable exe not found: $exe" }
-          $stage = "release-assets/portable"
-          New-Item -ItemType Directory -Force -Path "$stage/resources", "$stage/shared" | Out-Null
-          Copy-Item -Path $exe -Destination "$stage/DI-Viewer.exe"
-          Copy-Item -Recurse -Path "tauri-di-viewer/src-tauri/resources/lucid-start-page" -Destination "$stage/resources/"
-          Copy-Item -Recurse -Path "shared/dist" -Destination "$stage/shared/"
-          Compress-Archive -Path "$stage/*" -DestinationPath "release-assets/DI-Viewer-${{ github.ref_name }}-windows-x64-portable.zip" -Force
-          Remove-Item -Recurse -Force $stage
+          Copy-Item -Path $exe -Destination "release-assets/DI-Viewer-${{ github.ref_name }}-windows-x64-portable.exe"
 
       - name: Stage macOS dmg asset
         if: runner.os == 'macOS'

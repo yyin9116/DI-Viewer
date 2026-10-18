@@ -55,8 +55,9 @@ const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSma
 /// width; 1220x760 leaves the wrap fully expanded with a little slack).
 const START_PAGE_FIT_WIDTH: f64 = 1220.0;
 const START_PAGE_FIT_HEIGHT: f64 = 760.0;
-const SHARED_DIST_CSS_PATH: &str = "assets/app.css";
-const SHARED_DIST_JS_PATH: &str = "assets/app.js";
+const SHARED_DIST_CSS: &str = include_str!("../../../shared/dist/assets/app.css");
+const SHARED_DIST_JS: &str = include_str!("../../../shared/dist/assets/app.js");
+const EMBEDDED_HOME_HTML: &str = include_str!("../../../lucid-start-page/index.html");
 const DESKTOP_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
 #[allow(dead_code)]
 const PAGE_NAV_PATCH_JS: &str = r##"
@@ -316,6 +317,28 @@ fn normalize_url_with_home(url: &str, home_url: &str) -> String {
     }
 }
 
+/// Materialize the compile-time-embedded start page into the app data dir so
+/// the home URL can stay a `file://` URL (bookmarks/history keep working) even
+/// for the single-file portable build, which ships with no external resources.
+fn ensure_embedded_home(app: &AppHandle) -> Option<PathBuf> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .ok()?
+        .join("embedded")
+        .join("lucid-start-page");
+    let path = dir.join("index.html");
+    let needs_write = match fs::read_to_string(&path) {
+        Ok(current) => current != EMBEDDED_HOME_HTML,
+        Err(_) => true,
+    };
+    if needs_write {
+        fs::create_dir_all(&dir).ok()?;
+        fs::write(&path, EMBEDDED_HOME_HTML).ok()?;
+    }
+    Some(path)
+}
+
 fn resolve_home_url(app: &AppHandle) -> String {
     if let Ok(dev_home) = std::env::var("DI_VIEWER_HOME_URL") {
         let trimmed = dev_home.trim();
@@ -351,6 +374,12 @@ fn resolve_home_url(app: &AppHandle) -> String {
             .join("lucid-start-page")
             .join("index.html"),
     );
+
+    // Embedded start page (portable/single-file builds have no packaged
+    // resources); materialized into the app data dir on first run.
+    if let Some(embedded) = ensure_embedded_home(app) {
+        candidates.push(embedded);
+    }
 
     // Fallback to packaged resources.
     if let Ok(path) = app.path().resource_dir() {
@@ -704,55 +733,12 @@ fn escape_js_template_literal(input: &str) -> String {
         .replace("${", "\\${")
 }
 
-fn shared_dist_candidates(app: &AppHandle, relative_path: &str) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
-    if let Ok(resource_dir) = app.path().resource_dir() {
-        // Bundlers (NSIS/WiX) flatten each `..` component of a resource path
-        // into an `_up_` directory, so `../../shared/dist` installs to
-        // <resource_dir>/_up_/_up_/shared/dist. Probe the clean layouts first,
-        // then the flattened ones, so dev, MSI and NSIS installs all resolve.
-        for base in [
-            resource_dir.clone(),
-            resource_dir.join("_up_"),
-            resource_dir.join("_up_").join("_up_"),
-        ] {
-            candidates.push(base.join("shared").join("dist").join(relative_path));
-            candidates.push(base.join("dist").join(relative_path));
-        }
-    }
-    candidates.push(
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("shared")
-            .join("dist")
-            .join(relative_path),
-    );
-    candidates
-}
-
-fn read_shared_dist_asset(app: &AppHandle, relative_path: &str) -> AppResult<String> {
-    let candidates = shared_dist_candidates(app, relative_path);
-    for path in &candidates {
-        if path.exists() {
-            return fs::read_to_string(path).map_err(|err| {
-                format!("Read shared UI asset failed at {}: {err}", path.display())
-            });
-        }
-    }
-    let searched = candidates
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(format!(
-        "Required shared UI asset `{relative_path}` not found. Searched: {searched}"
-    ))
-}
-
-fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
-    let css = escape_js_template_literal(&read_shared_dist_asset(app, SHARED_DIST_CSS_PATH)?);
-    let js = read_shared_dist_asset(app, SHARED_DIST_JS_PATH)?;
+fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
+    // Shared UI assets are embedded at compile time (include_str!), so the
+    // shell works identically for dev, installed and single-file portable
+    // builds with no on-disk resource layout dependency.
+    let css = escape_js_template_literal(SHARED_DIST_CSS);
+    let js = SHARED_DIST_JS;
 
     let template = r##"
 (() => {
