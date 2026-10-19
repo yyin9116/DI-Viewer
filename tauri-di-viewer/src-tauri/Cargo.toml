@@ -18,7 +18,11 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["tray-icon"] }
+# `unstable` is what exposes `Window::add_child` — the only way to put several
+# webviews inside one native window, which is what a tab strip actually is.
+# Each tab keeps its own document (no reload on switch) but there is a single
+# OS window, so opacity / always-on-top / geometry apply once, not per tab.
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-opener = "2"
 url = "2"

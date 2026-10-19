@@ -22,9 +22,10 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, LogicalSize, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl,
-    WebviewWindow,
-    WebviewWindowBuilder, WindowEvent,
+    webview::{NewWindowResponse, Webview, WebviewBuilder},
+    window::{Window, WindowBuilder},
+    AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position,
+    Size, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
@@ -86,6 +87,16 @@ const SHELL_CHROME_HEIGHT: f64 = 88.0;
 const SHELL_SIDEBAR_WIDTH: f64 = 80.0;
 const SHARED_DIST_CSS: &str = include_str!("../../../shared/dist/assets/app.css");
 const SHARED_DIST_JS: &str = include_str!("../../../shared/dist/assets/app.js");
+/// Sarasa Gothic SC ships with the app: it is the typeface the design system
+/// specifies and it is not a Windows font, so relying on an installed copy meant
+/// the shell fell back to Segoe UI + YaHei and the two scripts never lined up.
+/// Embedded (not a resource file) so the single-file portable build keeps
+/// working. Regular + Semi Bold is the whole weight range the design system uses.
+const SARASA_REGULAR: &[u8] = include_bytes!("../fonts/SarasaGothicSC-Regular.woff2");
+const SARASA_SEMIBOLD: &[u8] = include_bytes!("../fonts/SarasaGothicSC-SemiBold.woff2");
+const FONT_SCHEME: &str = "diviewer";
+const FONT_PATH_REGULAR: &str = "font/sarasa-regular.woff2";
+const FONT_PATH_SEMIBOLD: &str = "font/sarasa-semibold.woff2";
 const DESKTOP_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
 #[allow(dead_code)]
 const PAGE_NAV_PATCH_JS: &str = r##"
@@ -225,7 +236,6 @@ struct AppState {
     home_url: String,
     ui_lang_zh: AtomicBool,
     data: Mutex<RuntimeState>,
-    closing_windows: Mutex<HashSet<String>>,
     snapping: AtomicBool,
     move_seq: AtomicU64,
     resize_seq: AtomicU64,
@@ -385,8 +395,45 @@ fn app_protocol_home_url() -> String {
     }
 }
 
-fn resolve_home_url(app: &AppHandle) -> String {
-    let _ = app; // signature kept for existing callers
+/// URL the injected shell loads the bundled typeface from. Custom protocols are
+/// `http://<scheme>.localhost/...` on Windows and `<scheme>://localhost/...`
+/// elsewhere; fonts are cross-origin requests, so the handler answers CORS too.
+fn font_url(path: &str) -> String {
+    if cfg!(windows) {
+        format!("http://{FONT_SCHEME}.localhost/{path}")
+    } else {
+        format!("{FONT_SCHEME}://localhost/{path}")
+    }
+}
+
+/// Serves the embedded woff2 files. Embedded rather than read from disk because
+/// the portable build is a single file with no resource directory to trust.
+fn font_asset_response(path: &str) -> tauri::http::Response<Vec<u8>> {
+    let path = path.trim_start_matches('/');
+    let asset: Option<(&[u8], &str)> = match path {
+        FONT_PATH_REGULAR => Some((SARASA_REGULAR, "font/woff2")),
+        FONT_PATH_SEMIBOLD => Some((SARASA_SEMIBOLD, "font/woff2")),
+        _ => None,
+    };
+    match asset {
+        Some((bytes, mime)) => tauri::http::Response::builder()
+            .status(200)
+            .header("Content-Type", mime)
+            // The shell runs inside arbitrary sites, so the request is
+            // cross-origin by definition.
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Cache-Control", "max-age=31536000, immutable")
+            .body(bytes.to_vec())
+            .unwrap_or_else(|_| tauri::http::Response::new(Vec::new())),
+        None => tauri::http::Response::builder()
+            .status(404)
+            .header("Access-Control-Allow-Origin", "*")
+            .body(Vec::new())
+            .unwrap_or_else(|_| tauri::http::Response::new(Vec::new())),
+    }
+}
+
+fn resolve_home_url(app: &AppHandle) -> String {    let _ = app; // signature kept for existing callers
     if let Ok(dev_home) = std::env::var("DI_VIEWER_HOME_URL") {
         let trimmed = dev_home.trim();
         if !trimmed.is_empty() && Url::parse(trimmed).is_ok() {
@@ -563,7 +610,11 @@ fn set_active_tab_url(state: &AppState, url: String) -> AppResult<()> {
 }
 
 fn sync_tab_from_browser_label(app: &AppHandle, label: &str) -> AppResult<()> {
-    let browser = browser_window_by_label(app, label)?;
+    // The tab may not have a webview yet (restored but never shown); its stored
+    // URL is the truth in that case, so there is nothing to sync.
+    let Some(browser) = app.get_webview(label) else {
+        return Ok(());
+    };
     let state = app.state::<AppState>();
     let home_url = state.home_url.clone();
     let current_url = browser
@@ -588,11 +639,6 @@ fn sync_tab_from_browser_label(app: &AppHandle, label: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn browser_window_by_label(app: &AppHandle, label: &str) -> AppResult<WebviewWindow> {
-    app.get_webview_window(label)
-        .ok_or_else(|| format!("Browser window not found: {label}"))
-}
-
 fn active_browser_label(app: &AppHandle) -> AppResult<String> {
     let state = app.state::<AppState>();
     let locked = state
@@ -614,87 +660,47 @@ fn browser_labels(app: &AppHandle) -> Vec<String> {
     locked.tabs.iter().map(|tab| tab.label.clone()).collect()
 }
 
-/// Create the webview for a tab that has not been opened yet in this session.
-/// Tabs are created lazily and then kept alive (hidden) so switching back is a
-/// show/hide, never a reload: scroll position, form state and video playback
-/// all survive.
-/// Geometry of the tab window the user can actually see right now.
+/// The single browsing window. Every tab is a child webview of this window.
 ///
-/// The active index is useless for this: `switch_tab`/`new_tab` point it at the
-/// tab they are about to create, so asking "which window is active" always
-/// answers with the window that does not exist yet. Reading the visible one
-/// keeps creation and the on-screen rect in sync from the first frame.
-fn visible_browser_rect(
-    app: &AppHandle,
-) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>, f64, bool)> {
-    for label in browser_labels(app) {
-        let Some(window) = app.get_webview_window(&label) else {
-            continue;
-        };
-        if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
-            continue;
-        }
-        let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
-            continue;
-        };
-        let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
-        return Some((
-            position,
-            size,
-            scale,
-            window.is_maximized().unwrap_or(false),
-        ));
-    }
-    None
+/// This is what a tab strip actually is: one OS window whose content area holds
+/// one webview per tab. The earlier model put every tab in its own window and
+/// faked switching with show/hide, which meant N window frames, N copies of the
+/// chrome and every window-level property (opacity, always-on-top, click-through,
+/// snapping, geometry) applied in a loop over all of them.
+fn browser_window(app: &AppHandle) -> AppResult<Window> {
+    app.get_window(BROWSER_LABEL)
+        .ok_or_else(|| "Browser window not found".to_string())
 }
 
-fn ensure_browser_window(app: &AppHandle, label: &str) -> AppResult<WebviewWindow> {
-    if let Some(window) = app.get_webview_window(label) {
-        return Ok(window);
-    }
-    let (initial, url) = {
-        let state = app.state::<AppState>();
-        let locked = state
-            .data
-            .lock()
-            .map_err(|_| "State lock poisoned".to_string())?;
-        let url = locked
-            .tabs
-            .iter()
-            .find(|tab| tab.label == label)
-            .map(|tab| tab.url.clone())
-            .unwrap_or_else(|| locked.persist.last_url.clone());
-        (locked.persist.clone(), url)
-    };
-    // Create the window at the rect the user is currently looking at. Building
-    // it at the persisted size and resizing it afterwards is what made a new
-    // tab look like "the app scaling up" for a frame.
-    let mut initial = initial;
-    if let Some((position, size, scale, maximized)) = visible_browser_rect(app) {
-        if maximized {
-            initial.window_maximized = true;
-        } else {
-            initial.window_start_x = position.x as f64 / scale;
-            initial.window_start_y = position.y as f64 / scale;
-            initial.window_width = size.width as f64 / scale;
-            initial.window_height = size.height as f64 / scale;
-            initial.window_maximized = false;
-        }
-    }
-    let window = create_browser_tab_window(app, label, &initial, &url, false)?;
-    push_log(app, "native", "create_tab_window", label.to_string());
-    Ok(window)
+fn tab_view(app: &AppHandle, label: &str) -> AppResult<Webview> {
+    app.get_webview(label)
+        .ok_or_else(|| format!("Tab webview not found: {label}"))
 }
 
-/// Restored tabs have no window until they are first visited, so the first
-/// click on one used to build a webview from nothing: fresh document, fresh
-/// React boot, ~300ms of naked page. That is the "switching tabs reloads the
-/// app" the user sees. Materialise them hidden, in the background, so a switch
-/// is only ever show/hide.
-const PREWARM_MAX_TABS: usize = 6;
-const PREWARM_GAP_MS: u64 = 260;
+/// Webview of the tab the user is looking at, materialised on demand.
+fn active_webview(app: &AppHandle) -> AppResult<Webview> {
+    let label = active_browser_label(app).unwrap_or_else(|_| BROWSER_LABEL.to_string());
+    ensure_tab_webview(app, &label)
+}
 
-fn prewarm_restored_tabs(app: &AppHandle) {
+/// Materialise a tab's webview if it does not exist yet. Tabs stay lazy: a
+/// restored tab gets its document the first time it is shown, and keeps it
+/// afterwards, so switching back is show/hide and never a reload.
+fn ensure_tab_webview(app: &AppHandle, label: &str) -> AppResult<Webview> {
+    if let Some(view) = app.get_webview(label) {
+        return Ok(view);
+    }
+    create_tab_webview(app, label, false)
+}
+
+/// Restoring a session means restoring its tabs, so their documents are built
+/// once in the background (hidden) instead of on the first click. Staggered and
+/// capped: each live tab is a real WebView2 document, and a 20-tab session
+/// should not boot 20 renderers before the user has looked at one.
+const RESTORE_MAX_TABS: usize = 6;
+const RESTORE_GAP_MS: u64 = 260;
+
+fn restore_session_tabs(app: &AppHandle) {
     let labels: Vec<String> = {
         let state = app.state::<AppState>();
         let Ok(locked) = state.data.lock() else {
@@ -707,7 +713,7 @@ fn prewarm_restored_tabs(app: &AppHandle) {
             .enumerate()
             .filter(|(idx, _)| *idx != active)
             .map(|(_, tab)| tab.label.clone())
-            .take(PREWARM_MAX_TABS)
+            .take(RESTORE_MAX_TABS)
             .collect()
     };
     if labels.is_empty() {
@@ -715,31 +721,26 @@ fn prewarm_restored_tabs(app: &AppHandle) {
     }
     let app = app.clone();
     thread::spawn(move || {
-        // Let the first window finish its own paint before borrowing the main
-        // thread for more webviews.
+        // Let the visible tab finish its own first paint before borrowing the
+        // main thread for more webviews.
         thread::sleep(Duration::from_millis(900));
         for label in labels {
             let app_for_main = app.clone();
             let label_for_main = label.clone();
             let _ = app.run_on_main_thread(move || {
-                match ensure_browser_window(&app_for_main, &label_for_main) {
-                    Ok(_) => push_log(&app_for_main, "native", "prewarm_tab", label_for_main),
+                match ensure_tab_webview(&app_for_main, &label_for_main) {
+                    Ok(_) => push_log(&app_for_main, "native", "restore_tab", label_for_main),
                     Err(err) => push_log(
                         &app_for_main,
                         "native",
-                        "prewarm_tab",
+                        "restore_tab",
                         format!("failed:{label_for_main}:{err}"),
                     ),
                 }
             });
-            thread::sleep(Duration::from_millis(PREWARM_GAP_MS));
+            thread::sleep(Duration::from_millis(RESTORE_GAP_MS));
         }
     });
-}
-
-fn browser_window(app: &AppHandle) -> AppResult<WebviewWindow> {
-    let label = active_browser_label(app).unwrap_or_else(|_| BROWSER_LABEL.to_string());
-    ensure_browser_window(app, &label)
 }
 
 fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
@@ -844,13 +845,13 @@ fn js_for_action(action: &str) -> Option<&'static str> {
 
 fn execute_video_action(app: &AppHandle, action: &str) -> AppResult<()> {
     let js = js_for_action(action).ok_or_else(|| format!("Unsupported video action: {action}"))?;
-    let browser = browser_window(app)?;
+    let browser = active_webview(app)?;
     browser
         .eval(js)
         .map_err(|err| format!("Evaluate JS failed: {err}"))
 }
 
-fn navigate_browser_to(browser: &WebviewWindow, normalized: &str) -> AppResult<()> {
+fn navigate_browser_to(browser: &Webview, normalized: &str) -> AppResult<()> {
     let parsed = parse_url(normalized)?;
     match browser.navigate(parsed) {
         Ok(_) => Ok(()),
@@ -1001,6 +1002,32 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
   // cuts off its left edge. Inline styles with `important` are used because a
   // <style> element created at document-start (before <head> exists) is not
   // reliably applied by WebView2.
+  // The design system's typeface ships inside the app (Sarasa is not a Windows
+  // font). FontFace is used instead of an injected @font-face rule: it is
+  // effective at document-start, reaches the shadow root, and does not depend on
+  // <style> parsing - which this WebView2 build skips for dynamically created
+  // sheets. If a site's CSP forbids the request the stack falls back to the next
+  // family (Noto Sans SC, same Source Han skeleton).
+  const registerFonts = () => {
+    if (!window.FontFace || !document.fonts) return;
+    const faces = [
+      ['400', '__FONT_REGULAR__'],
+      ['600', '__FONT_SEMIBOLD__']
+    ];
+    for (const pair of faces) {
+      try {
+        const face = new FontFace(
+          'Sarasa Gothic SC',
+          'url("' + pair[1] + '") format("woff2")',
+          { weight: pair[0], style: 'normal', display: 'swap' }
+        );
+        document.fonts.add(face);
+        if (face.load) face.load().catch(() => {});
+      } catch (_e) {}
+    }
+  };
+  registerFonts();
+
   const applyPageInset = () => {
     const de = document.documentElement;
     if (!de) return;
@@ -1100,7 +1127,9 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
         .replace("__CHROME_H__", &SHELL_CHROME_HEIGHT.to_string())
         .replace("__SIDEBAR_W__", &SHELL_SIDEBAR_WIDTH.to_string())
         .replace("__DIVIEWER_CSS__", &css)
-        .replace("__DIVIEWER_JS__", &js))
+        .replace("__DIVIEWER_JS__", &js)
+        .replace("__FONT_REGULAR__", &font_url(FONT_PATH_REGULAR))
+        .replace("__FONT_SEMIBOLD__", &font_url(FONT_PATH_SEMIBOLD)))
 }
 
 fn shared_shell_visibility_script(visible: bool) -> String {
@@ -1123,7 +1152,7 @@ fn shared_shell_visibility_script(visible: bool) -> String {
 
 #[allow(dead_code)]
 fn refresh_browser_injected_scripts_for_label(app: &AppHandle, label: &str) {
-    if let Some(window) = app.get_webview_window(label) {
+    if let Some(window) = app.get_webview(label) {
         let visible = app
             .state::<AppState>()
             .sidebar_visible
@@ -1141,7 +1170,7 @@ fn refresh_browser_injected_scripts_for_label(app: &AppHandle, label: &str) {
 
 #[cfg(target_os = "windows")]
 fn apply_window_effects(
-    window: &WebviewWindow,
+    window: &Window,
     opacity: f64,
     click_through: bool,
 ) -> AppResult<()> {
@@ -1196,14 +1225,14 @@ fn apply_window_effects(
 
 #[cfg(not(target_os = "windows"))]
 fn apply_window_effects(
-    _window: &WebviewWindow,
+    _window: &Window,
     _opacity: f64,
     _click_through: bool,
 ) -> AppResult<()> {
     Ok(())
 }
 
-fn snap_browser_to_edge_for_label(app: &AppHandle, label: &str) -> AppResult<()> {
+fn snap_browser_to_edge(app: &AppHandle) -> AppResult<()> {
     let state = app.state::<AppState>();
     if state.snapping.swap(true, Ordering::SeqCst) {
         return Ok(());
@@ -1212,7 +1241,7 @@ fn snap_browser_to_edge_for_label(app: &AppHandle, label: &str) -> AppResult<()>
         flag: &state.snapping,
     };
 
-    let browser = browser_window_by_label(app, label)?;
+    let browser = browser_window(app)?;
     // Snapping a maximized/fullscreen window means SetWindowPos on it, which
     // Windows honours by restoring it to the monitor origin.
     if browser.is_maximized().unwrap_or(false) || browser.is_fullscreen().unwrap_or(false) {
@@ -1262,8 +1291,8 @@ fn snap_browser_to_edge_for_label(app: &AppHandle, label: &str) -> AppResult<()>
     Ok(())
 }
 
-fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) -> AppResult<()> {
-    let browser = browser_window_by_label(app, label)?;
+fn persist_browser_state(app: &AppHandle, do_snap: bool) -> AppResult<()> {
+    let browser = browser_window(app)?;
     // Never persist while minimized: Windows reports the iconic rect
     // (-32000, -32000, 0x0), which would poison the saved geometry and
     // make the next launch restore the window off-screen.
@@ -1277,7 +1306,7 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
     let maximized_now = browser.is_maximized().unwrap_or(false);
     let fullscreen_now = browser.is_fullscreen().unwrap_or(false);
     if do_snap && !maximized_now && !fullscreen_now {
-        let _ = snap_browser_to_edge_for_label(app, label);
+        let _ = snap_browser_to_edge(app);
     }
     let position = browser
         .outer_position()
@@ -1299,26 +1328,15 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
     let visible = browser.is_visible().unwrap_or(true);
     let maximized = browser.is_maximized().unwrap_or(false);
     let state = app.state::<AppState>();
-    let current_url = browser
-        .url()
+    let active_label = active_browser_label(app).ok();
+    let current_url = active_label
+        .as_deref()
+        .and_then(|label| app.get_webview(label))
+        .and_then(|view| view.url().ok())
         .map(|u| u.to_string())
-        .unwrap_or_else(|_| state.home_url.clone());
-    // Only the tab that is actually on screen may drive the persisted
-    // "last url" and "window visible" flags; background tab windows are
-    // deliberately hidden and navigated on their own.
-    let is_active_tab = {
-        let locked = state
-            .data
-            .lock()
-            .map_err(|_| "State lock poisoned".to_string())?;
-        locked
-            .tabs
-            .get(locked.active_tab.min(locked.tabs.len().saturating_sub(1)))
-            .map(|tab| tab.label == label)
-            .unwrap_or(true)
-    };
+        .unwrap_or_else(|| state.home_url.clone());
     update_persist(&state, |persist| {
-        if is_active_tab && !current_url.trim().is_empty() {
+        if !current_url.trim().is_empty() {
             persist.last_url = current_url.clone();
         }
         if !maximized_now && !fullscreen_now {
@@ -1327,21 +1345,17 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
                 persist.window_start_y = position.y as f64 / scale;
             }
             // Persist inner size because create uses .inner_size(...).
-            // Using outer size here causes cumulative growth each tab/window cycle.
+            // Using outer size here causes cumulative growth each window cycle.
             persist.window_width = (inner.width as f64 / scale).round();
             persist.window_height = (inner.height as f64 / scale).round();
         }
-        if is_active_tab {
-            persist.window_visible = visible;
-            persist.window_maximized = maximized;
-        }
+        persist.window_visible = visible;
+        persist.window_maximized = maximized;
     })?;
-    sync_tab_from_browser_label(app, label)
-}
-
-fn persist_browser_state(app: &AppHandle, do_snap: bool) -> AppResult<()> {
-    let label = active_browser_label(app)?;
-    persist_browser_state_for_label(app, &label, do_snap)
+    if let Some(label) = active_label {
+        sync_tab_from_browser_label(app, &label)?;
+    }
+    Ok(())
 }
 
 fn toggle_show_hide_impl(app: &AppHandle) -> AppResult<bool> {
@@ -1357,7 +1371,9 @@ fn toggle_show_hide_impl(app: &AppHandle) -> AppResult<bool> {
             .show()
             .map_err(|err| format!("Show window failed: {err}"))?;
         let _ = browser.set_focus();
-        sync_shell_visibility(app, &browser);
+        if let Ok(view) = active_webview(app) {
+            sync_shell_visibility(app, &view);
+        }
     } else {
         browser
             .hide()
@@ -1380,17 +1396,14 @@ fn set_inside_mode_impl(app: &AppHandle, inside: bool) -> AppResult<bool> {
             .map_err(|_| "State lock poisoned".to_string())?;
         locked.persist.window_opacity
     };
-    // Every tab owns a window, so the effect has to land on all of them;
-    // otherwise switching tabs would reveal a stale click-through state.
-    for label in browser_labels(app) {
-        let Ok(browser) = browser_window_by_label(app, &label) else {
-            continue;
-        };
-        browser
-            .set_ignore_cursor_events(inside)
-            .map_err(|err| format!("Set click-through failed: {err}"))?;
-        apply_window_effects(&browser, opacity, inside)?;
-    }
+    // One window for every tab, so the effect is applied exactly once - the
+    // old per-tab-window model had to repeat it for all N windows and any
+    // window created afterwards came up with a stale click-through state.
+    let browser = browser_window(app)?;
+    browser
+        .set_ignore_cursor_events(inside)
+        .map_err(|err| format!("Set click-through failed: {err}"))?;
+    apply_window_effects(&browser, opacity, inside)?;
 
     update_persist(&state, |persist| {
         persist.window_inside = inside;
@@ -1423,13 +1436,9 @@ fn toggle_on_top_impl(app: &AppHandle) -> AppResult<bool> {
             .map_err(|_| "State lock poisoned".to_string())?;
         !locked.persist.window_on_top
     };
-    for label in browser_labels(app) {
-        if let Ok(browser) = browser_window_by_label(app, &label) {
-            browser
-                .set_always_on_top(next)
-                .map_err(|err| format!("Set always-on-top failed: {err}"))?;
-        }
-    }
+    browser_window(app)?
+        .set_always_on_top(next)
+        .map_err(|err| format!("Set always-on-top failed: {err}"))?;
     update_persist(&state, |persist| {
         persist.window_on_top = next;
     })?;
@@ -1446,11 +1455,7 @@ fn set_opacity_impl(app: &AppHandle, opacity: f64) -> AppResult<f64> {
             .map_err(|_| "State lock poisoned".to_string())?;
         locked.persist.window_inside
     };
-    for label in browser_labels(app) {
-        if let Ok(browser) = browser_window_by_label(app, &label) {
-            apply_window_effects(&browser, next, inside)?;
-        }
-    }
+    apply_window_effects(&browser_window(app)?, next, inside)?;
     update_persist(&state, |persist| {
         persist.window_opacity = next;
     })?;
@@ -1466,8 +1471,8 @@ fn set_shell_opacity_impl(app: &AppHandle, opacity: f64) -> AppResult<f64> {
 
     let script = format!("(() => {{ document.documentElement.style.opacity = '{}'; document.body.style.opacity = '{}'; }})();", next, next);
     for label in browser_labels(app) {
-        if let Ok(browser) = browser_window_by_label(app, &label) {
-            let _ = browser.eval(script.clone());
+        if let Some(view) = app.get_webview(&label) {
+            let _ = view.eval(script.clone());
         }
     }
     Ok(next)
@@ -1562,8 +1567,8 @@ fn resize_to_ratio_impl(app: &AppHandle, ratio: f64, commit: bool) -> AppResult<
 
     let scale = browser.scale_factor().unwrap_or(1.0).max(0.01);
     let current_url = if commit {
-        browser
-            .url()
+        active_webview(app)
+            .and_then(|view| view.url().map_err(|err| err.to_string()))
             .map(|u| u.to_string())
             .unwrap_or_else(|_| state.home_url.clone())
     } else {
@@ -1629,7 +1634,7 @@ fn fit_window_to_start_page(app: &AppHandle) -> AppResult<()> {
 }
 
 /// True when at least a readable chunk of the window sits inside a monitor.
-fn window_is_reachable(window: &WebviewWindow) -> bool {
+fn window_is_reachable(window: &Window) -> bool {
     let Ok(position) = window.outer_position() else {
         return false;
     };
@@ -1663,7 +1668,7 @@ fn window_is_reachable(window: &WebviewWindow) -> bool {
 /// Center and clamp the window onto the primary monitor. Used on launch and by
 /// the rescue shortcut when the saved rect is off-screen (monitor unplugged,
 /// resolution changed, or geometry captured while the window was iconic).
-fn center_window_on_primary(window: &WebviewWindow) -> AppResult<()> {
+fn center_window_on_primary(window: &Window) -> AppResult<()> {
     let monitor = window
         .primary_monitor()
         .map_err(|err| format!("Read monitor failed: {err}"))?
@@ -1698,7 +1703,7 @@ fn center_window_on_primary(window: &WebviewWindow) -> AppResult<()> {
     Ok(())
 }
 
-fn ensure_window_on_screen(window: &WebviewWindow) -> AppResult<()> {
+fn ensure_window_on_screen(window: &Window) -> AppResult<()> {
     if window_is_reachable(window) {
         return Ok(());
     }
@@ -1727,15 +1732,15 @@ fn rescue_window_impl(app: &AppHandle) -> AppResult<()> {
         persist.window_position_locked = false;
     })?;
 
-    for label in browser_labels(app) {
-        let Ok(window) = browser_window_by_label(app, &label) else {
-            continue;
-        };
+    if let Ok(window) = browser_window(app) {
         let _ = window.set_ignore_cursor_events(false);
         let _ = apply_window_effects(&window, 1.0, false);
         let _ = window.set_always_on_top(on_top);
-        let _ = window
-            .eval("(() => { document.documentElement.style.opacity = '1'; document.body.style.opacity = '1'; })();");
+        for label in browser_labels(app) {
+            if let Some(view) = app.get_webview(&label) {
+                let _ = view.eval("(() => { document.documentElement.style.opacity = '1'; document.body.style.opacity = '1'; })();");
+            }
+        }
     }
 
     let window = browser_window(app)?;
@@ -1746,7 +1751,9 @@ fn rescue_window_impl(app: &AppHandle) -> AppResult<()> {
     let _ = window.set_always_on_top(on_top);
     ensure_window_on_screen(&window)?;
     let _ = window.set_focus();
-    sync_shell_visibility(app, &window);
+    if let Ok(view) = active_webview(app) {
+        sync_shell_visibility(app, &view);
+    }
     push_log(app, "native", "rescue_window", "ok");
     Ok(())
 }
@@ -1823,26 +1830,8 @@ fn maximize_restore_impl(app: &AppHandle) -> AppResult<bool> {
 }
 
 fn close_app_impl(app: &AppHandle) {
-    let labels = {
-        let state = app.state::<AppState>();
-        let collected = if let Ok(locked) = state.data.lock() {
-            locked
-                .tabs
-                .iter()
-                .map(|tab| tab.label.clone())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        collected
-    };
-    if labels.is_empty() {
-        let _ = persist_browser_state(app, false);
-    } else {
-        for label in labels {
-            let _ = persist_browser_state_for_label(app, &label, false);
-        }
-    }
+    // One window, one geometry: a single persist call is enough now.
+    let _ = persist_browser_state(app, false);
     app.exit(0);
 }
 
@@ -2126,47 +2115,209 @@ fn setup_tray(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-fn create_browser_tab_window(
-    app: &AppHandle,
-    label: &str,
-    initial: &PersistedState,
-    initial_url: &str,
-    visible: bool,
-) -> AppResult<WebviewWindow> {
-    let home_url = app.state::<AppState>().home_url.clone();
-    let url = parse_url(&normalize_url_with_home(initial_url, &home_url))?;
+/// Create the one browsing window and put the active tab inside it.
+///
+/// The window itself carries no page: every tab is a `Webview` child of it. That
+/// is the whole point of this shape - switching tabs moves which child is
+/// visible instead of trading OS windows, and the window-level properties
+/// (opacity, always-on-top, click-through, snapping, geometry) belong to exactly
+/// one window instead of N.
+fn create_browser_window(app: &AppHandle) -> AppResult<()> {
+    if let Ok(window) = browser_window(app) {
+        let _ = window.show();
+        return Ok(());
+    }
+    let state = app.state::<AppState>();
+    let (initial, visible, active_label) = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        let active = if locked.tabs.is_empty() {
+            0
+        } else {
+            locked.active_tab.min(locked.tabs.len() - 1)
+        };
+        let active_label = locked
+            .tabs
+            .get(active)
+            .map(|tab| tab.label.clone())
+            .unwrap_or_else(|| BROWSER_LABEL.to_string());
+        (
+            locked.persist.clone(),
+            locked.persist.window_visible,
+            active_label,
+        )
+    };
+    let ui_lang_zh = state.ui_lang_zh.load(Ordering::SeqCst);
+
+    let window = WindowBuilder::new(app, BROWSER_LABEL)
+        .title(ui_text(ui_lang_zh, "DI-Viewer Browser", "DI-Viewer Browser"))
+        .inner_size(initial.window_width, initial.window_height)
+        .min_inner_size(600.0, 320.0)
+        .position(initial.window_start_x, initial.window_start_y)
+        .resizable(true)
+        // Shown only after its first webview exists, otherwise the user sees an
+        // empty frame for the time it takes the child to attach.
+        .visible(false)
+        .build()
+        .map_err(|err| format!("Create browser window failed: {err}"))?;
+
+    attach_browser_window_events(app, &window);
+
+    if initial.window_maximized {
+        let _ = window.maximize();
+    }
+    if initial.window_on_top {
+        let _ = window.set_always_on_top(true);
+    }
+    apply_window_effects(&window, initial.window_opacity, initial.window_inside)?;
+    window
+        .set_ignore_cursor_events(initial.window_inside)
+        .map_err(|err| format!("Set click-through failed: {err}"))?;
+
+    if let Err(err) = create_tab_webview(app, &active_label, true) {
+        push_log(app, "native", "create_tab_webview", format!("failed:{err}"));
+        return Err(err);
+    }
+
+    if visible {
+        let _ = window.show();
+        let _ = window.set_focus();
+        if let Ok(view) = tab_view(app, &active_label) {
+            let _ = view.set_focus();
+        }
+    }
+    Ok(())
+}
+
+/// Window-level behaviour (snap, geometry persistence, close semantics). Attached
+/// once, to the one window, instead of once per tab window.
+fn attach_browser_window_events(app: &AppHandle, window: &Window) {
+    let app_handle = app.clone();
+    window.on_window_event(move |event| match event {
+        WindowEvent::Moved(position) => {
+            let (locked_position, target_x, target_y) = {
+                let state = app_handle.state::<AppState>();
+                let locked = state.data.lock();
+                if let Ok(locked) = locked {
+                    (
+                        locked.persist.window_position_locked,
+                        locked.persist.window_start_x as i32,
+                        locked.persist.window_start_y as i32,
+                    )
+                } else {
+                    (false, 0, 0)
+                }
+            };
+            if locked_position {
+                if position.x != target_x || position.y != target_y {
+                    if let Some(window) = app_handle.get_window(BROWSER_LABEL) {
+                        let _ = window.set_position(Position::Physical(PhysicalPosition::new(
+                            target_x, target_y,
+                        )));
+                    }
+                }
+                return;
+            }
+
+            let state = app_handle.state::<AppState>();
+            // A width-bar drag moves the window every frame; snapping to an
+            // edge mid-gesture would fight the user's hand.
+            if state.ratio_drag.load(Ordering::SeqCst) {
+                return;
+            }
+            let seq = state.move_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let app_for_snap = app_handle.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(SNAP_DEBOUNCE_MS));
+                let state = app_for_snap.state::<AppState>();
+                if state.move_seq.load(Ordering::SeqCst) == seq {
+                    let _ = snap_browser_to_edge(&app_for_snap);
+                    let _ = persist_browser_state(&app_for_snap, false);
+                }
+            });
+        }
+        WindowEvent::Resized(_) => {
+            // Resized fires continuously while dragging edges; debounce the
+            // disk write instead of persisting on every tick.
+            let state = app_handle.state::<AppState>();
+            if state.ratio_drag.load(Ordering::SeqCst) {
+                return;
+            }
+            let seq = state.resize_seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let app_for_resize = app_handle.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(RESIZE_DEBOUNCE_MS));
+                let state = app_for_resize.state::<AppState>();
+                if state.resize_seq.load(Ordering::SeqCst) == seq {
+                    let _ = persist_browser_state(&app_for_resize, false);
+                }
+            });
+        }
+        WindowEvent::CloseRequested { api, .. } => {
+            // Tabs are webviews, so closing the window means closing the app;
+            // the tab strip's own X is what closes a single tab.
+            api.prevent_close();
+            close_app_impl(&app_handle);
+        }
+        _ => {}
+    });
+}
+
+/// Materialise one tab: a full-bleed webview inside the browsing window.
+///
+/// The shell is injected per webview (it is an overlay inside the page), so a tab
+/// keeps its document, scroll position, form state and playback for its whole
+/// lifetime - switching is `hide`/`show` on the child, never a navigation.
+fn create_tab_webview(app: &AppHandle, label: &str, visible: bool) -> AppResult<Webview> {
+    let window = browser_window(app)?;
+    let (home_url, url) = {
+        let state = app.state::<AppState>();
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        let url = locked
+            .tabs
+            .iter()
+            .find(|tab| tab.label == label)
+            .map(|tab| tab.url.clone())
+            .unwrap_or_else(|| locked.persist.last_url.clone());
+        (state.home_url.clone(), url)
+    };
+    let parsed = parse_url(&normalize_url_with_home(&url, &home_url))?;
+    // The home page must load through the application protocol
+    // (WebviewUrl::App) so the injected shell gets a valid IPC origin.
+    let webview_url = if parsed.as_str() == home_url {
+        WebviewUrl::App(PathBuf::from(LOCAL_HOME_RESOURCE))
+    } else {
+        WebviewUrl::External(parsed)
+    };
+
+    let shell_script = shared_shell_script(app)?;
+    let browser_args = webview_browser_args();
     let app_for_popup = app.clone();
     let app_for_load = app.clone();
     let label_for_popup = label.to_string();
     let label_for_load = label.to_string();
-    let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
 
-    let shell_script = shared_shell_script(app)?;
-    let browser_args = webview_browser_args();
+    let size = window
+        .inner_size()
+        .map_err(|err| format!("Read inner size failed: {err}"))?;
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+    let bounds = LogicalSize::new(
+        (size.width as f64 / scale).max(1.0),
+        (size.height as f64 / scale).max(1.0),
+    );
 
-    // The home page must load through the application protocol (WebviewUrl::App)
-    // so the injected shell gets a valid IPC origin.
-    let webview_url = if url.as_str() == home_url {
-        WebviewUrl::App(PathBuf::from(LOCAL_HOME_RESOURCE))
-    } else {
-        WebviewUrl::External(url)
-    };
-
-    let browser = WebviewWindowBuilder::new(app, label.to_string(), webview_url)
-        .title(ui_text(
-            ui_lang_zh,
-            "DI-Viewer Browser",
-            "DI-Viewer Browser",
-        ))
-        .inner_size(initial.window_width, initial.window_height)
-        .min_inner_size(600.0, 320.0)
-        .additional_browser_args(&browser_args)
-        .position(initial.window_start_x, initial.window_start_y)
-        .resizable(true)
-        .always_on_top(initial.window_on_top)
+    let builder = WebviewBuilder::new(label.to_string(), webview_url)
         .user_agent(DESKTOP_BROWSER_USER_AGENT)
-        .visible(visible)
+        .additional_browser_args(&browser_args)
         .initialization_script(shell_script)
+        // Every tab fills the window; the page is inset by the shell itself.
+        .auto_resize()
+        .focused(visible)
         .on_navigation(|_url| true)
         .on_new_window(move |new_url, _features| {
             // `target="_blank"` and `window.open` land here. Navigating from
@@ -2187,14 +2338,14 @@ fn create_browser_tab_window(
                     Err(err) => push_log(&app_on_main, "native", "popup_tab", format!("failed:{err}")),
                 });
             });
-            tauri::webview::NewWindowResponse::Deny
+            NewWindowResponse::Deny
         })
-        .on_page_load(move |window, _payload| {
+        .on_page_load(move |webview, _payload| {
             let visible = app_for_load
                 .state::<AppState>()
                 .sidebar_visible
                 .load(Ordering::SeqCst);
-            if let Err(err) = window.eval(shared_shell_visibility_script(visible)) {
+            if let Err(err) = webview.eval(shared_shell_visibility_script(visible)) {
                 push_log(
                     &app_for_load,
                     "native",
@@ -2203,142 +2354,16 @@ fn create_browser_tab_window(
                 );
             }
             let _ = sync_tab_from_browser_label(&app_for_load, &label_for_load);
-        })
-        .build()
-        .map_err(|err| format!("Create browser window failed: {err}"))?;
+        });
 
-    if initial.window_maximized {
-        let _ = browser.maximize();
+    let webview = window
+        .add_child(builder, LogicalPosition::new(0.0, 0.0), bounds)
+        .map_err(|err| format!("Create tab webview failed: {err}"))?;
+    if !visible {
+        let _ = webview.hide();
     }
-    apply_window_effects(&browser, initial.window_opacity, initial.window_inside)?;
-    browser
-        .set_ignore_cursor_events(initial.window_inside)
-        .map_err(|err| format!("Set click-through failed: {err}"))?;
-
-    let app_handle = app.clone();
-    let label_for_event = label.to_string();
-    browser.on_window_event(move |event| match event {
-        WindowEvent::Moved(position) => {
-            let (locked_position, target_x, target_y) = {
-                let state = app_handle.state::<AppState>();
-                let locked = state.data.lock();
-                if let Ok(locked) = locked {
-                    (
-                        locked.persist.window_position_locked,
-                        locked.persist.window_start_x as i32,
-                        locked.persist.window_start_y as i32,
-                    )
-                } else {
-                    (false, 0, 0)
-                }
-            };
-            if locked_position {
-                if position.x != target_x || position.y != target_y {
-                    if let Some(browser) = app_handle.get_webview_window(&label_for_event) {
-                        let _ = browser.set_position(Position::Physical(PhysicalPosition::new(
-                            target_x, target_y,
-                        )));
-                    }
-                }
-                return;
-            }
-
-            let state = app_handle.state::<AppState>();
-            // A width-bar drag moves the window every frame; snapping to an
-            // edge mid-gesture would fight the user's hand.
-            if state.ratio_drag.load(Ordering::SeqCst) {
-                return;
-            }
-            let seq = state.move_seq.fetch_add(1, Ordering::SeqCst) + 1;
-            let app_for_snap = app_handle.clone();
-            let label_for_snap = label_for_event.clone();
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(SNAP_DEBOUNCE_MS));
-                let state = app_for_snap.state::<AppState>();
-                if state.move_seq.load(Ordering::SeqCst) == seq {
-                    let _ = snap_browser_to_edge_for_label(&app_for_snap, &label_for_snap);
-                    let _ = persist_browser_state_for_label(&app_for_snap, &label_for_snap, false);
-                }
-            });
-        }
-        WindowEvent::Resized(_) => {
-            // Resized fires continuously while dragging edges; debounce the
-            // disk write instead of persisting on every tick.
-            let state = app_handle.state::<AppState>();
-            if state.ratio_drag.load(Ordering::SeqCst) {
-                return;
-            }
-            let seq = state.resize_seq.fetch_add(1, Ordering::SeqCst) + 1;
-            let app_for_resize = app_handle.clone();
-            let label_for_resize = label_for_event.clone();
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(RESIZE_DEBOUNCE_MS));
-                let state = app_for_resize.state::<AppState>();
-                if state.resize_seq.load(Ordering::SeqCst) == seq {
-                    let _ =
-                        persist_browser_state_for_label(&app_for_resize, &label_for_resize, false);
-                }
-            });
-        }
-        WindowEvent::CloseRequested { api, .. } => {
-            let allow_close = {
-                let state = app_handle.state::<AppState>();
-                let removed = if let Ok(mut closing) = state.closing_windows.lock() {
-                    closing.remove(&label_for_event)
-                } else {
-                    false
-                };
-                removed
-            };
-            if allow_close {
-                return;
-            }
-            api.prevent_close();
-            close_app_impl(&app_handle);
-        }
-        _ => {}
-    });
-
-    Ok(browser)
-}
-
-fn create_browser_window(app: &AppHandle) -> AppResult<()> {
-    let state = app.state::<AppState>();
-    let (initial, active_url, visible, active_label) = {
-        let locked = state
-            .data
-            .lock()
-            .map_err(|_| "State lock poisoned".to_string())?;
-        let active = if locked.tabs.is_empty() {
-            0
-        } else {
-            locked.active_tab.min(locked.tabs.len() - 1)
-        };
-        let (active_url, active_label) = if locked.tabs.is_empty() {
-            (
-                locked.persist.last_url.clone(),
-                BROWSER_LABEL.to_string(),
-            )
-        } else {
-            (
-                locked.tabs[active].url.clone(),
-                locked.tabs[active].label.clone(),
-            )
-        };
-        (
-            locked.persist.clone(),
-            active_url,
-            locked.persist.window_visible,
-            active_label,
-        )
-    };
-
-    let browser = create_browser_tab_window(app, &active_label, &initial, &active_url, visible)?;
-    if visible {
-        let _ = browser.show();
-        let _ = browser.set_focus();
-    }
-    Ok(())
+    push_log(app, "native", "create_tab_webview", label.to_string());
+    Ok(webview)
 }
 
 fn push_log(app: &AppHandle, source: &str, action: &str, detail: impl Into<String>) {
@@ -2432,12 +2457,14 @@ async fn get_state(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResu
 
     // Read-only: never take the lazy-creation path here, `get_state` is polled.
     if let Ok(label) = active_browser_label(&app) {
-        if let Ok(browser) = browser_window_by_label(&app, &label) {
-            if let Ok(url) = browser.url() {
+        if let Some(view) = app.get_webview(&label) {
+            if let Ok(url) = view.url() {
                 snapshot.0.last_url = url.to_string();
             }
-            snapshot.0.window_visible = browser.is_visible().unwrap_or(snapshot.0.window_visible);
-            snapshot.0.window_maximized = browser
+        }
+        if let Ok(window) = browser_window(&app) {
+            snapshot.0.window_visible = window.is_visible().unwrap_or(snapshot.0.window_visible);
+            snapshot.0.window_maximized = window
                 .is_maximized()
                 .unwrap_or(snapshot.0.window_maximized);
         }
@@ -2520,7 +2547,7 @@ async fn set_dock_color(state: tauri::State<'_, AppState>, color: String) -> App
 async fn navigate(app: AppHandle, state: tauri::State<'_, AppState>, url: String) -> AppResult<String> {
     let normalized = normalize_url_with_home(&url, &state.home_url);
     push_log(&app, "ui", "navigate", format!("start:{}", normalized));
-    let browser = browser_window(&app)?;
+    let browser = active_webview(&app)?;
     navigate_browser_to(&browser, &normalized)?;
     set_active_tab_url(&state, normalized.clone())?;
     push_log(&app, "ui", "navigate", "ok");
@@ -2613,10 +2640,12 @@ async fn get_logs(state: tauri::State<'_, AppState>) -> AppResult<Vec<LogEntry>>
     Ok(logs.clone())
 }
 
-/// Re-apply the persisted layer effects to a single tab window. Each tab owns
-/// a window, so opacity / click-through / always-on-top must be restored on the
-/// one being presented, otherwise a freshly created tab would look different.
-fn apply_saved_window_state(app: &AppHandle, window: &WebviewWindow) -> AppResult<()> {
+/// Re-apply the persisted layer effects to the browsing window.
+///
+/// With one window for every tab this runs once per presentation instead of once
+/// per tab window, and a newly created tab inherits the current state instead of
+/// showing a stale opacity / click-through.
+fn apply_saved_window_state(app: &AppHandle, window: &Window) -> AppResult<()> {
     let state = app.state::<AppState>();
     let (opacity, inside, on_top) = {
         let locked = state
@@ -2647,64 +2676,40 @@ fn apply_saved_window_state(app: &AppHandle, window: &WebviewWindow) -> AppResul
     Ok(())
 }
 
-fn sync_shell_visibility(app: &AppHandle, window: &WebviewWindow) {
+fn sync_shell_visibility(app: &AppHandle, view: &Webview) {
     let visible = app
         .state::<AppState>()
         .sidebar_visible
         .load(Ordering::SeqCst);
-    let _ = window.eval(shared_shell_visibility_script(visible));
+    let _ = view.eval(shared_shell_visibility_script(visible));
 }
 
-/// Bring `target_label` on screen and hide every other tab window. Pages are
-/// never reloaded here: a hidden webview keeps its document, so scroll
-/// position, form input and media playback survive the switch.
-fn present_tab_window(app: &AppHandle, target_label: &str, from_label: &str) -> AppResult<()> {
-    let target = ensure_browser_window(app, target_label)?;
-    let mut inherit_maximized = false;
-    if target_label != from_label {
-        if let Some(current) = app.get_webview_window(from_label) {
-            inherit_maximized = current.is_maximized().unwrap_or(false);
-            if let (Ok(position), Ok(size)) = (current.outer_position(), current.inner_size()) {
-                // Only move/resize when it actually differs: a redundant
-                // set_size still makes WebView2 re-layout the page, which reads
-                // as a zoom flash on every tab switch.
-                let position_matches = target
-                    .outer_position()
-                    .map(|p| p.x == position.x && p.y == position.y)
-                    .unwrap_or(false);
-                if !position_matches {
-                    let _ = target.set_position(Position::Physical(position));
-                }
-                if !inherit_maximized {
-                    let size_matches = target
-                        .inner_size()
-                        .map(|s| s.width == size.width && s.height == size.height)
-                        .unwrap_or(false);
-                    if !size_matches {
-                        let _ = target.set_size(Size::Physical(size));
-                    }
-                }
-            }
-        }
-    }
-    if inherit_maximized {
-        let _ = target.maximize();
-    }
-    apply_saved_window_state(app, &target)?;
-    // Hide first, then show: leaving both windows visible for one frame paints
-    // two chromes on top of each other, which reads as a flash.
+/// Show `target_label`'s webview and hide the other tabs' webviews.
+///
+/// Pages are never reloaded here: a hidden child webview keeps its document, so
+/// scroll position, form input and media playback survive the switch. The OS
+/// window never moves, resizes, hides or shows - which is why switching no
+/// longer looks like the app restarting.
+fn present_tab(app: &AppHandle, target_label: &str) -> AppResult<()> {
+    let window = browser_window(app)?;
+    let target = ensure_tab_webview(app, target_label)?;
+    // Hide first, then show: two visible webviews for a frame paints two chromes
+    // on top of each other, which reads as a flash.
     for label in browser_labels(app) {
         if label == target_label {
             continue;
         }
-        if let Some(other) = app.get_webview_window(&label) {
+        if let Some(other) = app.get_webview(&label) {
             let _ = other.hide();
         }
     }
-    let _ = target.unminimize();
-    target
-        .show()
-        .map_err(|err| format!("Show window failed: {err}"))?;
+    apply_saved_window_state(app, &window)?;
+    let _ = target.show();
+    if !window.is_visible().unwrap_or(true) {
+        let _ = window.show();
+    }
+    let _ = window.unminimize();
+    let _ = window.set_focus();
     let _ = target.set_focus();
     sync_shell_visibility(app, &target);
     Ok(())
@@ -2714,7 +2719,7 @@ fn present_tab_window(app: &AppHandle, target_label: &str, from_label: &str) -> 
 async fn switch_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i32) -> AppResult<String> {
     push_log(&app, "ui", "switch_tab", format!("start:{}", index));
 
-    let (idx, target_url, target_label, current_label) = {
+    let (idx, target_url, target_label) = {
         let locked = state
             .data
             .lock()
@@ -2732,7 +2737,6 @@ async fn switch_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i3
             idx,
             locked.tabs[idx].url.clone(),
             locked.tabs[idx].label.clone(),
-            locked.tabs[current_idx].label.clone(),
         )
     };
 
@@ -2744,7 +2748,7 @@ async fn switch_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i3
         locked.active_tab = idx;
     }
 
-    present_tab_window(&app, &target_label, &current_label)?;
+    present_tab(&app, &target_label)?;
 
     update_persist(&state, |persist| {
         persist.last_url = target_url.clone();
@@ -2776,7 +2780,7 @@ fn new_tab_impl(app: &AppHandle, url: &str) -> AppResult<String> {
         &state.home_url,
     );
 
-    let (label, current_label) = {
+    let label = {
         let mut locked = state
             .data
             .lock()
@@ -2787,12 +2791,6 @@ fn new_tab_impl(app: &AppHandle, url: &str) -> AppResult<String> {
             return Err(format!("Maximum tab count reached: {MAX_TAB_SESSIONS}"));
         }
 
-        let current_label = if locked.tabs.is_empty() {
-            String::new()
-        } else {
-            let current_idx = locked.active_tab.min(locked.tabs.len() - 1);
-            locked.tabs[current_idx].label.clone()
-        };
         let seq = state.next_tab_seq.fetch_add(1, Ordering::SeqCst) + 1;
         let label = format!("browser-{seq}");
         locked.tabs.push(BrowserTab {
@@ -2801,10 +2799,10 @@ fn new_tab_impl(app: &AppHandle, url: &str) -> AppResult<String> {
             url: target.clone(),
         });
         locked.active_tab = locked.tabs.len().saturating_sub(1);
-        (label, current_label)
+        label
     };
 
-    present_tab_window(app, &label, &current_label)?;
+    present_tab(app, &label)?;
 
     update_persist(&state, |persist| {
         persist.last_url = target.clone();
@@ -2880,27 +2878,12 @@ async fn close_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i32
         }
     };
 
-    // Capture the outgoing window's on-screen geometry before it closes so the
-    // neighbouring tab takes over the exact same rectangle.
-    let inherited_geometry = plan
-        .removed_label
-        .as_deref()
-        .and_then(|label| app.get_webview_window(label))
-        .and_then(|window| {
-            let maximized = window.is_maximized().unwrap_or(false);
-            window
-                .outer_position()
-                .ok()
-                .zip(window.inner_size().ok())
-                .map(|(position, size)| (position, size, maximized))
-        });
-
+    // Closing a tab destroys only that tab's webview. The window - and every
+    // other tab's document - is untouched, which is what makes closing a tab
+    // instant and non-disruptive.
     if let Some(removed_label) = plan.removed_label.as_deref() {
-        if let Some(window) = app.get_webview_window(removed_label) {
-            if let Ok(mut closing) = state.closing_windows.lock() {
-                closing.insert(removed_label.to_string());
-            }
-            let _ = window.close();
+        if let Some(view) = app.get_webview(removed_label) {
+            let _ = view.close();
         }
     }
 
@@ -2916,30 +2899,16 @@ async fn close_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i32
                 .map(|tab| tab.label.clone())
                 .unwrap_or_else(|| plan.next_label.clone())
         };
-        let window = ensure_browser_window(&app, &active_label)?;
+        let view = ensure_tab_webview(&app, &active_label)?;
         if plan.reset_to_home {
-            navigate_browser_to(&window, &plan.next_url)?;
+            navigate_browser_to(&view, &plan.next_url)?;
         }
-        apply_saved_window_state(&app, &window)?;
-        let _ = window.unminimize();
-        window
-            .show()
-            .map_err(|err| format!("Show window failed: {err}"))?;
-        let _ = window.set_focus();
-        sync_shell_visibility(&app, &window);
-        if let Some((position, size, maximized)) = inherited_geometry {
-            let _ = window.set_position(Position::Physical(position));
-            if maximized {
-                let _ = window.maximize();
-            } else {
-                let _ = window.set_size(Size::Physical(size));
-            }
-        }
+        present_tab(&app, &active_label)?;
         for label in browser_labels(&app) {
             if label == active_label {
                 continue;
             }
-            if let Some(other) = app.get_webview_window(&label) {
+            if let Some(other) = app.get_webview(&label) {
                 let _ = other.hide();
             }
         }
@@ -2975,7 +2944,7 @@ async fn video_action(app: AppHandle, action: String) -> AppResult<()> {
 
 #[tauri::command]
 async fn go_back(app: AppHandle) -> AppResult<String> {
-    let browser = browser_window(&app)?;
+    let browser = active_webview(&app)?;
     browser
         .eval("window.history.back();")
         .map_err(|err| format!("Evaluate JS failed: {err}"))?;
@@ -2984,7 +2953,7 @@ async fn go_back(app: AppHandle) -> AppResult<String> {
 
 #[tauri::command]
 async fn go_forward(app: AppHandle) -> AppResult<String> {
-    let browser = browser_window(&app)?;
+    let browser = active_webview(&app)?;
     browser
         .eval("window.history.forward();")
         .map_err(|err| format!("Evaluate JS failed: {err}"))?;
@@ -2993,7 +2962,7 @@ async fn go_forward(app: AppHandle) -> AppResult<String> {
 
 #[tauri::command]
 async fn refresh_page(app: AppHandle) -> AppResult<String> {
-    let browser = browser_window(&app)?;
+    let browser = active_webview(&app)?;
     browser
         .eval("window.location.reload();")
         .map_err(|err| format!("Evaluate JS failed: {err}"))?;
@@ -3018,7 +2987,7 @@ async fn toggle_sidebar(app: AppHandle) -> AppResult<bool> {
     };
     let script = shared_shell_visibility_script(next);
     for label in labels {
-        if let Ok(browser) = browser_window_by_label(&app, &label) {
+        if let Some(browser) = app.get_webview(&label) {
             let _ = browser.eval(script.clone());
         }
     }
@@ -3105,6 +3074,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        // Serves the embedded Sarasa files; see `font_asset_response`.
+        .register_uri_scheme_protocol(FONT_SCHEME, |_ctx, request| {
+            font_asset_response(request.uri().path())
+        })
         .setup(|app| -> Result<(), Box<dyn std::error::Error>> {
             let data_dir = resolve_data_dir(&app.handle().clone());
             fs::create_dir_all(&data_dir)?;
@@ -3209,7 +3182,6 @@ pub fn run() {
                     persist,
                     hotkeys,
                 }),
-                closing_windows: Mutex::new(HashSet::new()),
                 snapping: AtomicBool::new(false),
                 move_seq: AtomicU64::new(0),
                 resize_seq: AtomicU64::new(0),
@@ -3252,7 +3224,7 @@ pub fn run() {
             if let Ok(browser) = browser_window(&app.handle().clone()) {
                 let _ = ensure_window_on_screen(&browser);
             }
-            prewarm_restored_tabs(&app.handle().clone());
+            restore_session_tabs(&app.handle().clone());
             setup_tray(&app.handle().clone()).map_err(std::io::Error::other)?;
 
             {
