@@ -8,7 +8,7 @@ use persistence::{
 };
 use serde::Serialize;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -53,11 +53,33 @@ const RESCUE_SHORTCUT: &str = "Ctrl+Alt+Shift+R";
 /// NOTE: additional_browser_args REPLACES wry's defaults, so the default
 /// disabled-features list must be restated here.
 const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-sandbox --no-sandbox";
+
+/// Same arguments, optionally plus a DevTools port. Shipping builds leave
+/// `DIVIEWER_DEBUG_PORT` unset, so no port is ever opened by default; a
+/// diagnostic run can set it to 9336 and attach with any CDP client.
+fn webview_browser_args() -> String {
+    let mut args = String::from(WEBVIEW_BROWSER_ARGS);
+    if let Ok(port) = std::env::var("DIVIEWER_DEBUG_PORT") {
+        let port = port.trim();
+        if !port.is_empty() {
+            args.push_str(" --remote-debugging-port=");
+            args.push_str(port);
+        }
+    }
+    args
+}
 /// Logical inner size that fits the start page without scrolling
 /// (measured via CDP: content needs ~759px height at its 1180px max wrap
 /// width; 1220x760 leaves the wrap fully expanded with a little slack).
 const START_PAGE_FIT_WIDTH: f64 = 1220.0;
 const START_PAGE_FIT_HEIGHT: f64 = 760.0;
+/// Toolbar (56) + tab strip (32). Kept in sync with `SHELL_CHROME_HEIGHT` in
+/// the shell sources: pages are padded down by exactly this much so the chrome
+/// never covers their content.
+const SHELL_CHROME_HEIGHT: f64 = 88.0;
+/// Width of the left rail. The page is inset by this much while the shell is
+/// expanded so the rail never cuts off the page's own left column.
+const SHELL_SIDEBAR_WIDTH: f64 = 80.0;
 const SHARED_DIST_CSS: &str = include_str!("../../../shared/dist/assets/app.css");
 const SHARED_DIST_JS: &str = include_str!("../../../shared/dist/assets/app.js");
 const DESKTOP_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15";
@@ -213,6 +235,14 @@ struct AppState {
     /// occupied shortcut must never make the app unlaunchable.
     hotkey_conflicts: Mutex<Vec<String>>,
     log_store: Mutex<Vec<LogEntry>>,
+    /// Last layered-window attributes pushed per HWND. Re-applying the same
+    /// opacity / click-through on every tab switch makes Windows repaint the
+    /// whole window (a visible flash), so identical values are skipped.
+    applied_effects: Mutex<HashMap<isize, (u8, bool)>>,
+    /// Same idea for the per-window flags (`always on top`, click-through),
+    /// keyed by window label: `set_always_on_top` goes through SetWindowPos,
+    /// which repaints the window.
+    applied_flags: Mutex<HashMap<String, (bool, bool)>>,
 }
 
 #[derive(Clone, Copy)]
@@ -599,6 +629,28 @@ fn ensure_browser_window(app: &AppHandle, label: &str) -> AppResult<WebviewWindo
             .unwrap_or_else(|| locked.persist.last_url.clone());
         (locked.persist.clone(), url)
     };
+    // Inherit the geometry the user is currently looking at. Creating the tab
+    // at the persisted size and then resizing it on screen is what made a new
+    // tab look like "the app scaling up" for a frame.
+    let mut initial = initial;
+    if let Ok(active) = active_browser_label(app) {
+        if active != label {
+            if let Some(current) = app.get_webview_window(&active) {
+                if !current.is_maximized().unwrap_or(false) {
+                    if let (Ok(position), Ok(size)) = (current.outer_position(), current.inner_size()) {
+                        let scale = current.scale_factor().unwrap_or(1.0).max(0.01);
+                        initial.window_start_x = position.x as f64 / scale;
+                        initial.window_start_y = position.y as f64 / scale;
+                        initial.window_width = size.width as f64 / scale;
+                        initial.window_height = size.height as f64 / scale;
+                        initial.window_maximized = false;
+                    }
+                } else {
+                    initial.window_maximized = true;
+                }
+            }
+        }
+    }
     let window = create_browser_tab_window(app, label, &initial, &url, false)?;
     push_log(app, "native", "create_tab_window", label.to_string());
     Ok(window)
@@ -620,6 +672,7 @@ fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
     }
 
     let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
+    let browser_args = webview_browser_args();
     let window =
         WebviewWindowBuilder::new(app, CONTROL_LABEL, WebviewUrl::App("index.html".into()))
             .title(ui_text(
@@ -628,7 +681,7 @@ fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
                 "DI-Viewer Control",
             ))
             .inner_size(760.0, 940.0)
-            .additional_browser_args(WEBVIEW_BROWSER_ARGS)
+            .additional_browser_args(&browser_args)
             .resizable(true)
             .build()
             .map_err(|err| format!("Create control window failed: {err}"))?;
@@ -862,7 +915,30 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
   // Initialization scripts run before the document exists: documentElement and
   // body are still null at that point, so DOM setup must defer to
   // DOMContentLoaded or the shell dies with a TypeError and never mounts.
+  // The chrome is an overlay, so the page has to be inset by exactly its size;
+  // otherwise the tab strip sits on top of the page's own header and the rail
+  // cuts off its left edge. Inline styles with `important` are used because a
+  // <style> element created at document-start (before <head> exists) is not
+  // reliably applied by WebView2.
+  const applyPageInset = () => {
+    const de = document.documentElement;
+    if (!de) return;
+    const height = __CHROME_H__;
+    // Only seed the variables: React owns them afterwards (collapsing the shell
+    // drops the insets back to 0) and re-seeding would undo that.
+    if (!de.style.getPropertyValue('--diviewer-inset-top')) {
+      de.style.setProperty('--diviewer-inset-top', height + 'px');
+    }
+    if (!de.style.getPropertyValue('--diviewer-inset-left')) {
+      de.style.setProperty('--diviewer-inset-left', __SIDEBAR_W__ + 'px');
+    }
+    de.style.setProperty('box-sizing', 'border-box', 'important');
+    de.style.setProperty('padding-top', 'var(--diviewer-inset-top)', 'important');
+    de.style.setProperty('padding-left', 'var(--diviewer-inset-left)', 'important');
+  };
+
   const setupShellDom = () => {
+    applyPageInset();
     let root = document.getElementById('__diviewer_shared_root__');
     if (!root) {
       root = document.createElement('div');
@@ -880,6 +956,15 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
       mount.id = '__diviewer_shared_mount__';
       mount.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;pointer-events:none;background:transparent;';
       shadow.appendChild(mount);
+    }
+
+    // Static strip painted before React boots. Without it the chrome vanished
+    // for the first frames of every navigation ("嵌入态消失一下又回来").
+    if (!shadow.getElementById('__diviewer_chrome_frame__')) {
+      const frame = document.createElement('div');
+      frame.id = '__diviewer_chrome_frame__';
+      frame.style.cssText = 'position:fixed;left:0;top:0;right:0;height:' + __CHROME_H__ + 'px;pointer-events:none;';
+      shadow.insertBefore(frame, shadow.firstChild);
     }
 
     // Dynamically inserted <style> elements are not parsed by this WebView2
@@ -915,10 +1000,16 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
   } else {
     document.addEventListener('DOMContentLoaded', () => setupShellDom(), { once: true });
   }
+  // Late stylesheets (and SPAs that rewrite <head>) can drop our inset rule;
+  // re-append it once the document settled.
+  document.addEventListener('DOMContentLoaded', applyPageInset, { once: true });
+  window.addEventListener('load', applyPageInset, { once: true });
 })();
 "##;
 
     Ok(template
+        .replace("__CHROME_H__", &SHELL_CHROME_HEIGHT.to_string())
+        .replace("__SIDEBAR_W__", &SHELL_SIDEBAR_WIDTH.to_string())
         .replace("__DIVIEWER_CSS__", &css)
         .replace("__DIVIEWER_JS__", &js))
 }
@@ -974,6 +1065,27 @@ fn apply_window_effects(
     };
 
     let alpha = (opacity.clamp(0.2, 1.0) * 255.0).round() as u8;
+    let key = hwnd as isize;
+    let app = window.app_handle();
+
+    // Re-applying identical layered attributes forces a full window repaint.
+    // Do it only when something actually changed (and never trust the cache
+    // alone: a recycled HWND may arrive without WS_EX_LAYERED set).
+    let mut already_applied = false;
+    unsafe {
+        let style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        let layered = style & WS_EX_LAYERED != 0;
+        let transparent = style & WS_EX_TRANSPARENT != 0;
+        if layered && transparent == click_through {
+            if let Ok(cache) = app.state::<AppState>().applied_effects.lock() {
+                already_applied = cache.get(&key) == Some(&(alpha, click_through));
+            }
+        }
+    }
+    if already_applied {
+        return Ok(());
+    }
+
     unsafe {
         let mut style = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
         style |= WS_EX_LAYERED;
@@ -986,6 +1098,9 @@ fn apply_window_effects(
         if SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA) == 0 {
             return Err("SetLayeredWindowAttributes failed".to_string());
         }
+    }
+    if let Ok(mut cache) = app.state::<AppState>().applied_effects.lock() {
+        cache.insert(key, (alpha, click_through));
     }
     Ok(())
 }
@@ -1908,6 +2023,7 @@ fn create_browser_tab_window(
     let ui_lang_zh = app.state::<AppState>().ui_lang_zh.load(Ordering::SeqCst);
 
     let shell_script = shared_shell_script(app)?;
+    let browser_args = webview_browser_args();
 
     // The home page must load through the application protocol (WebviewUrl::App)
     // so the injected shell gets a valid IPC origin.
@@ -1925,7 +2041,7 @@ fn create_browser_tab_window(
         ))
         .inner_size(initial.window_width, initial.window_height)
         .min_inner_size(600.0, 320.0)
-        .additional_browser_args(WEBVIEW_BROWSER_ARGS)
+        .additional_browser_args(&browser_args)
         .position(initial.window_start_x, initial.window_start_y)
         .resizable(true)
         .always_on_top(initial.window_on_top)
@@ -1934,9 +2050,24 @@ fn create_browser_tab_window(
         .initialization_script(shell_script)
         .on_navigation(|_url| true)
         .on_new_window(move |new_url, _features| {
-            if let Some(browser) = app_for_popup.get_webview_window(&label_for_popup) {
-                let _ = navigate_browser_to(&browser, new_url.as_str());
-            }
+            // `target="_blank"` and `window.open` land here. Navigating from
+            // inside this callback is silently dropped by WebView2 (the
+            // request is still being created), which made every such link
+            // look dead. Answer with Deny and open a real tab on the next
+            // tick instead.
+            let app = app_for_popup.clone();
+            let url = new_url.to_string();
+            let label = label_for_popup.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(60));
+                let app_on_main = app.clone();
+                let _ = app.run_on_main_thread(move || match new_tab_impl(&app_on_main, &url) {
+                    Ok(opened) => {
+                        push_log(&app_on_main, "native", "popup_tab", format!("{label}->{opened}"))
+                    }
+                    Err(err) => push_log(&app_on_main, "native", "popup_tab", format!("failed:{err}")),
+                });
+            });
             tauri::webview::NewWindowResponse::Deny
         })
         .on_page_load(move |window, _payload| {
@@ -2370,8 +2501,20 @@ fn apply_saved_window_state(app: &AppHandle, window: &WebviewWindow) -> AppResul
         )
     };
     apply_window_effects(window, opacity, inside)?;
-    let _ = window.set_ignore_cursor_events(inside);
-    let _ = window.set_always_on_top(on_top);
+    let label = window.label().to_string();
+    let unchanged = app
+        .state::<AppState>()
+        .applied_flags
+        .lock()
+        .map(|cache| cache.get(&label) == Some(&(inside, on_top)))
+        .unwrap_or(false);
+    if !unchanged {
+        let _ = window.set_ignore_cursor_events(inside);
+        let _ = window.set_always_on_top(on_top);
+        if let Ok(mut cache) = app.state::<AppState>().applied_flags.lock() {
+            cache.insert(label, (inside, on_top));
+        }
+    }
     Ok(())
 }
 
@@ -2393,9 +2536,24 @@ fn present_tab_window(app: &AppHandle, target_label: &str, from_label: &str) -> 
         if let Some(current) = app.get_webview_window(from_label) {
             inherit_maximized = current.is_maximized().unwrap_or(false);
             if let (Ok(position), Ok(size)) = (current.outer_position(), current.inner_size()) {
-                let _ = target.set_position(Position::Physical(position));
+                // Only move/resize when it actually differs: a redundant
+                // set_size still makes WebView2 re-layout the page, which reads
+                // as a zoom flash on every tab switch.
+                let position_matches = target
+                    .outer_position()
+                    .map(|p| p.x == position.x && p.y == position.y)
+                    .unwrap_or(false);
+                if !position_matches {
+                    let _ = target.set_position(Position::Physical(position));
+                }
                 if !inherit_maximized {
-                    let _ = target.set_size(Size::Physical(size));
+                    let size_matches = target
+                        .inner_size()
+                        .map(|s| s.width == size.width && s.height == size.height)
+                        .unwrap_or(false);
+                    if !size_matches {
+                        let _ = target.set_size(Size::Physical(size));
+                    }
                 }
             }
         }
@@ -2467,14 +2625,22 @@ async fn switch_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i3
 }
 
 #[tauri::command]
-async fn new_tab(app: AppHandle, state: tauri::State<'_, AppState>, url: String) -> AppResult<String> {
-    push_log(&app, "ui", "new_tab", format!("start:{}", url));
+async fn new_tab(app: AppHandle, url: String) -> AppResult<String> {
+    new_tab_impl(&app, &url)
+}
+
+/// Shared by the `new_tab` command and the popup handler: a link with
+/// `target="_blank"` (or `window.open`) has to end up somewhere, otherwise the
+/// click looks dead.
+fn new_tab_impl(app: &AppHandle, url: &str) -> AppResult<String> {
+    let state = app.state::<AppState>();
+    push_log(app, "ui", "new_tab", format!("start:{}", url));
 
     let target = normalize_url_with_home(
         if url.trim().is_empty() {
             state.home_url.as_str()
         } else {
-            url.as_str()
+            url
         },
         &state.home_url,
     );
@@ -2486,7 +2652,7 @@ async fn new_tab(app: AppHandle, state: tauri::State<'_, AppState>, url: String)
             .map_err(|_| "State lock poisoned".to_string())?;
 
         if locked.tabs.len() >= MAX_TAB_SESSIONS {
-            push_log(&app, "ui", "new_tab", "max_tabs");
+            push_log(app, "ui", "new_tab", "max_tabs");
             return Err(format!("Maximum tab count reached: {MAX_TAB_SESSIONS}"));
         }
 
@@ -2507,14 +2673,14 @@ async fn new_tab(app: AppHandle, state: tauri::State<'_, AppState>, url: String)
         (label, current_label)
     };
 
-    present_tab_window(&app, &label, &current_label)?;
+    present_tab_window(app, &label, &current_label)?;
 
     update_persist(&state, |persist| {
         persist.last_url = target.clone();
         persist.window_visible = true;
     })?;
 
-    push_log(&app, "ui", "new_tab", "ok");
+    push_log(app, "ui", "new_tab", "ok");
     Ok(target)
 }
 
@@ -2920,6 +3086,8 @@ pub fn run() {
                 next_tab_seq: AtomicU64::new(initial_tab_count),
                 hotkey_conflicts: Mutex::new(Vec::new()),
                 log_store: Mutex::new(Vec::new()),
+                applied_effects: Mutex::new(HashMap::new()),
+                applied_flags: Mutex::new(HashMap::new()),
             });
 
             create_browser_window(&app.handle().clone()).map_err(std::io::Error::other)?;

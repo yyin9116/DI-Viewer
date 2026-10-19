@@ -95,6 +95,16 @@ select {
   pointer-events: none;
 }
 
+/*
+ * Painted by the native bootstrap before React boots, so the chrome strip is
+ * there from the first frame of every navigation instead of appearing ~80ms
+ * late. React renders over it; it is transparent to input either way.
+ */
+#__diviewer_chrome_frame__ {
+  background: var(--color-chrome);
+  border-bottom: 1px solid var(--color-chrome-line);
+}
+
 .diviewer-host-root * {
   box-sizing: border-box;
 }

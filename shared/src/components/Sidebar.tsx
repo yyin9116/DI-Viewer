@@ -26,6 +26,8 @@ interface SidebarProps {
   onFullscreenClick: () => void;
   onMediaAction: (action: 'video_backward' | 'toggle_play_pause' | 'video_forward') => void;
   lang: UILang;
+  /** Short window (e.g. the 1/3 preset): tighten the rail so nothing clips. */
+  dense: boolean;
 }
 
 const TEXT = {
@@ -55,7 +57,7 @@ const TEXT = {
   }
 } as const;
 
-export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, onSettingsClick, isPinned, onTogglePin, isOpen, onToggle, onFullscreenClick, onMediaAction, lang }: SidebarProps) {
+export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, onSettingsClick, isPinned, onTogglePin, isOpen, onToggle, onFullscreenClick, onMediaAction, lang, dense }: SidebarProps) {
   const t = TEXT[lang];
 
   return (
@@ -100,41 +102,42 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
             opacity: isOpen ? 1 : 0
           }}
           transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
-          className={`relative flex h-full w-20 flex-col items-center py-6 ${isOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}
+          className={`relative flex h-full w-20 flex-col items-center overflow-y-auto scrollbar-hide ${dense ? 'gap-1 py-2' : 'py-6'} ${isOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}
         >
           <button
             type="button"
             onClick={onToggle}
             title={isOpen ? t.collapse : t.expand}
-            className="group relative flex h-12 w-12 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border border-slate-200/50 bg-white/60 shadow-sm transition-colors hover:bg-slate-100/70 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60"
+            className={`group relative flex shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border border-slate-200/50 bg-white/60 shadow-sm transition-colors hover:bg-slate-100/70 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 ${dense ? 'h-9 w-9' : 'h-12 w-12'}`}
           >
             <div className="absolute inset-0 bg-slate-100/50 opacity-0 transition-opacity duration-300 group-hover:opacity-100 dark:bg-zinc-700/50" />
-            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-9 w-9 -translate-y-0.5 text-slate-700 drop-shadow-sm transition-transform duration-300 group-hover:scale-110 dark:text-slate-200">
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className={`${dense ? 'h-7 w-7' : 'h-9 w-9'} -translate-y-0.5 text-slate-700 drop-shadow-sm transition-transform duration-300 group-hover:scale-110 dark:text-slate-200`}>
               <path d="M30 20H55C71.5685 20 85 33.4315 85 50C85 66.5685 71.5685 80 55 80H30V20Z" fill="currentColor" fillOpacity="0.4" />
               <rect x="15" y="20" width="20" height="60" rx="10" fill="currentColor" />
               <circle cx="55" cy="50" r="10" fill="currentColor" />
             </svg>
           </button>
 
-          <div className="flex w-full flex-1 flex-col items-center justify-center gap-4">
+          <div className={`flex w-full flex-1 flex-col items-center justify-center ${dense ? 'gap-2' : 'gap-4'}`}>
             <div className="w-full px-3">
-              <SidebarButton icon={<Bookmark size={22} />} label={t.bookmarks} onClick={onBookmarksClick} />
+              <SidebarButton icon={<Bookmark size={22} />} label={t.bookmarks} onClick={onBookmarksClick} dense={dense} />
             </div>
 
-            <div className="mx-2 flex w-full flex-col items-center justify-center gap-3 rounded-2xl bg-black/5 px-3 py-4 dark:bg-white/5 pointer-events-auto">
-              <SidebarButton icon={<SkipBack size={18} />} label={t.prev} size="sm" onClick={() => onMediaAction('video_backward')} />
-              <SidebarButton icon={<Play size={22} />} label={t.play} onClick={() => onMediaAction('toggle_play_pause')} />
-              <SidebarButton icon={<SkipForward size={18} />} label={t.next} size="sm" onClick={() => onMediaAction('video_forward')} />
+            <div className={`mx-2 flex w-full flex-col items-center justify-center rounded-2xl bg-black/5 px-3 dark:bg-white/5 pointer-events-auto ${dense ? 'gap-1.5 py-2' : 'gap-3 py-4'}`}>
+              <SidebarButton icon={<SkipBack size={18} />} label={t.prev} size="sm" onClick={() => onMediaAction('video_backward')} dense={dense} />
+              <SidebarButton icon={<Play size={22} />} label={t.play} onClick={() => onMediaAction('toggle_play_pause')} dense={dense} />
+              <SidebarButton icon={<SkipForward size={18} />} label={t.next} size="sm" onClick={() => onMediaAction('video_forward')} dense={dense} />
             </div>
 
             <div className="w-full px-3">
-              <div className="flex flex-col gap-4">
-              <SidebarButton icon={<Maximize size={22} />} label={t.fullscreen} onClick={onFullscreenClick} />
+              <div className={`flex flex-col ${dense ? 'gap-2' : 'gap-4'}`}>
+              <SidebarButton icon={<Maximize size={22} />} label={t.fullscreen} onClick={onFullscreenClick} dense={dense} />
               <SidebarButton
                 icon={isPinned ? <Pin size={22} /> : <PinOff size={22} />}
                 label={isPinned ? t.unpin : t.pin}
                 onClick={onTogglePin}
                 active={isPinned}
+                dense={dense}
               />
               </div>
             </div>
@@ -142,7 +145,7 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
 
           <div className="w-full px-3">
             <div className="mx-auto my-1 h-px w-8 bg-black/10 dark:bg-white/10" />
-            <SidebarButton icon={<Settings size={22} />} label={t.settings} onClick={onSettingsClick} />
+            <SidebarButton icon={<Settings size={22} />} label={t.settings} onClick={onSettingsClick} dense={dense} />
           </div>
         </motion.div>
       </motion.div>
@@ -156,15 +159,17 @@ interface SidebarButtonProps {
   onClick?: () => void;
   active?: boolean;
   size?: 'sm' | 'md';
+  dense?: boolean;
 }
 
-function SidebarButton({ icon, label, onClick, active, size = 'md' }: SidebarButtonProps) {
+function SidebarButton({ icon, label, onClick, active, size = 'md', dense = false }: SidebarButtonProps) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={`
-        relative group flex aspect-square w-full items-center justify-center rounded-xl transition-all duration-200 pointer-events-auto
+        relative group flex items-center justify-center rounded-xl transition-all duration-200 pointer-events-auto
+        ${dense ? 'h-9 w-9' : 'aspect-square w-full'}
         ${active
           ? 'bg-teal-500 text-white shadow-md shadow-teal-500/20'
           : 'text-slate-600 hover:bg-black/5 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
@@ -173,7 +178,9 @@ function SidebarButton({ icon, label, onClick, active, size = 'md' }: SidebarBut
       `}
       title={label}
     >
-      {icon}
+      <span className={dense ? 'flex scale-[0.82] items-center justify-center' : 'flex items-center justify-center'}>
+        {icon}
+      </span>
       <span className="pointer-events-none absolute left-full z-50 ml-4 whitespace-nowrap rounded-md bg-slate-800 px-2 py-1 text-xs font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
         {label}
       </span>

@@ -18,6 +18,13 @@ tauri-di-viewer/dist/
 tauri-di-viewer/src-tauri/target/
 tauri-di-viewer/src-tauri/gen/
 
+# Shared package build artifacts
+shared/node_modules/
+shared/dist/
+
+# Local scratch space
+.scratch/
+
 # OS / editor noise
 .DS_Store
 Thumbs.db

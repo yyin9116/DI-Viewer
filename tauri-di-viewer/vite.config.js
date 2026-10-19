@@ -1,4 +1,4 @@
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig } from "vite";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
@@ -7,8 +7,9 @@ import { dirname, resolve } from "node:path";
  * binary and served through the application protocol (http://tauri.localhost on
  * Windows). `file://` home pages cannot host the injected shell because the
  * IPC layer rejects their null origin.
+ * @returns {import("vite").Plugin}
  */
-function copyStartPage(): Plugin {
+function copyStartPage() {
   return {
     name: "copy-lucid-start-page",
     closeBundle() {

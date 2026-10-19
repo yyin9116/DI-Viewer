@@ -17,6 +17,7 @@ interface BrowserViewProps {
   onNavigateHistory: (index: number) => void;
   onRefresh: () => void;
   lang: UILang;
+  compact: boolean;
 }
 
 const TEXT = {
@@ -64,7 +65,7 @@ function getFaviconUrl(url: string): string | null {
   }
 }
 
-export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, onTabAdd, isSidebarOpen, onTabsReorder, onNavigateHistory, onRefresh, lang }: BrowserViewProps) {
+export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, onTabAdd, isSidebarOpen, onTabsReorder, onNavigateHistory, onRefresh, lang, compact }: BrowserViewProps) {
   const [inputUrl, setInputUrl] = useState('');
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -117,7 +118,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
           >
             {/* No opaque backdrop: the bar's own children carry the surface, so
                 collapsing (or expanding) can never leave a white strip behind. */}
-            <div className="pointer-events-auto relative z-20 flex h-14 shrink-0 items-center gap-4 border-b border-chrome-line bg-chrome px-4">
+            <div className={`pointer-events-auto relative z-20 flex h-14 shrink-0 items-center border-b border-chrome-line bg-chrome ${compact ? 'gap-2 px-2.5' : 'gap-4 px-4'}`}>
               <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
                 <div className="relative flex items-center group">
                   <button
@@ -227,7 +228,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
               axis="x"
               values={tabs}
               onReorder={onTabsReorder}
-              className="pointer-events-auto relative z-20 flex shrink-0 items-center gap-[3px] overflow-x-auto border-b border-chrome-line bg-chrome-strip px-1.5 py-1 scrollbar-hide"
+              className="pointer-events-auto relative z-20 flex h-8 shrink-0 items-center gap-[3px] overflow-x-auto border-b border-chrome-line bg-chrome-strip px-1.5 scrollbar-hide"
             >
               {tabs.map((tTab) => {
                 const favicon = getFaviconUrl(tTab.url);
@@ -243,7 +244,9 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                       // navigation: no spinner, no reload, state is preserved.
                       onTabSelect(tTab.id);
                     }}
-                    className={`group flex h-7 min-w-[112px] max-w-[196px] cursor-pointer select-none items-center gap-1.5 rounded-[7px] px-2 text-[11px] transition-colors ${
+                    className={`group flex h-7 cursor-pointer select-none items-center gap-1.5 rounded-[7px] text-[11px] transition-colors ${
+                      compact ? 'min-w-[96px] max-w-[148px] px-1.5' : 'min-w-[112px] max-w-[196px] px-2'
+                    } ${
                       tTab.id === tab.id
                         ? 'bg-tab-active font-medium text-slate-900 shadow-[0_0_0_1px_var(--color-tab-active-line),0_1px_1px_rgba(15,23,42,0.06)] dark:text-white'
                         : 'font-normal text-tab-idle hover:bg-black/[0.045] dark:hover:bg-white/[0.06]'

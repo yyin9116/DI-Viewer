@@ -5,6 +5,7 @@ import { BrowserView } from './components/BrowserView';
 import { MainMenu } from './components/MainMenu';
 import { hostBridge } from './bridge/hostBridge';
 import { matchInAppHotkey } from './lib/inAppHotkeys';
+import { useViewport } from './lib/useViewport';
 import type { FrontendState, HostSnapshot, HotkeyConfig } from './types';
 export interface Tab {
   id: string;
@@ -45,6 +46,10 @@ const defaultState: FrontendState = {
   hotkeyConflicts: []
 };
 const GITHUB_REPO_URL = 'https://github.com/yyin9116/DI-Viewer';
+/** Toolbar (56) + tab strip (32) — see SHELL_CHROME_HEIGHT in main.rs. */
+const SHELL_CHROME_HEIGHT = 88;
+/** Width of the left rail — see SHELL_SIDEBAR_WIDTH in main.rs. */
+const SHELL_SIDEBAR_WIDTH = 80;
 
 const I18N = {
   zh: {
@@ -225,6 +230,10 @@ export default function App() {
     if (shellRoot) {
       shellRoot.setAttribute('data-theme', theme);
     }
+    // The pre-React strip painted by the native bootstrap lives outside the
+    // React tree; give it the same theme so it does not flash light.
+    const frame = host.shadowRoot?.getElementById('__diviewer_chrome_frame__');
+    if (frame) frame.classList.toggle('dark', isDarkMode);
     window.dispatchEvent(new CustomEvent('diviewer:theme-change', { detail: { theme } }));
   }, [isDarkMode]);
   useEffect(() => {
@@ -426,6 +435,16 @@ export default function App() {
     void run(() => hostBridge.saveBookmark(url, title), 'save_bookmark', 2500);
   };
   const shellOpen = snapshot.state.sidebarVisible;
+  const viewport = useViewport();
+  const compact = viewport.width < 760;
+  useEffect(() => {
+    // The native bootstrap insets the page before the first paint; keep it in
+    // sync when the shell collapses into its handle (the page then owns the
+    // full window again).
+    const style = document.documentElement.style;
+    style.setProperty('--diviewer-inset-top', `${shellOpen ? SHELL_CHROME_HEIGHT : 0}px`);
+    style.setProperty('--diviewer-inset-left', `${shellOpen ? SHELL_SIDEBAR_WIDTH : 0}px`);
+  }, [shellOpen]);
   return (
     <div className={`diviewer-host-root ${isDarkMode ? 'dark' : ''}`}>
       <div className="relative h-full w-full overflow-hidden pointer-events-none">
@@ -454,6 +473,7 @@ export default function App() {
             onFullscreenClick={() => void run(() => hostBridge.maximizeRestore(), 'maximize_restore', 3000)}
             onMediaAction={(action) => void run(() => hostBridge.videoAction(action), `video:${action}`, 2500)}
             lang={uiLang}
+            dense={viewport.height < 560}
           />
           <div className="relative z-0 flex h-full min-w-0 flex-1 flex-col overflow-hidden pointer-events-none">
             <BrowserView
@@ -468,6 +488,7 @@ export default function App() {
               onNavigateHistory={handleNavigateHistory}
               onRefresh={() => void run(() => hostBridge.refreshPage(), 'refresh', 3000)}
               lang={uiLang}
+              compact={compact}
             />
           </div>
           {diagMessage && (
@@ -535,7 +556,7 @@ export default function App() {
                   setUiLang(lang);
                   void run(() => hostBridge.setUiLanguage(lang), 'set_lang', 2500);
                 }}
-                onResizeRatio={(ratio) => void runAndCloseMenu(() => hostBridge.resizeToRatio(ratio), 3000)}
+                onResizeRatio={(ratio) => void run(() => hostBridge.resizeToRatio(ratio), 'resize_ratio', 3000)}
                 onToggleInsideMode={() => {
                   const nextInside = !snapshot.state.inside;
                   void run(() => hostBridge.setInsideMode(nextInside), 'set_inside_mode', 2500);

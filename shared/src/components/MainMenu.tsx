@@ -4,8 +4,6 @@ import {
   X,
   Moon,
   Sun,
-  Droplet,
-  Monitor,
   Layout,
   Keyboard,
   Info,
@@ -23,6 +21,7 @@ import {
 } from 'lucide-react';
 import type { HotkeyConfig } from '../types';
 import { bindingHasModifier, bindingIsTypingSafe } from '../lib/inAppHotkeys';
+import { useViewport } from '../lib/useViewport';
 
 type UILang = 'zh' | 'en';
 type MenuView = 'appearance' | 'window' | 'shortcuts' | 'recovery';
@@ -83,7 +82,7 @@ const TEXT = {
     positionLockHint: '禁止拖动窗口',
     sidebar: '显示侧边栏',
     sidebarHint: '收起后左侧仅保留展开把手',
-    presets: '窗口预设',
+    presets: '窗口宽度',
     presetHalf: '1/2',
     presetThird: '1/3',
     presetTwoThirds: '2/3',
@@ -149,7 +148,7 @@ const TEXT = {
     positionLockHint: 'Dragging is disabled',
     sidebar: 'Show sidebar',
     sidebarHint: 'Collapsed leaves only the handle',
-    presets: 'Window presets',
+    presets: 'Window width',
     presetHalf: '1/2',
     presetThird: '1/3',
     presetTwoThirds: '2/3',
@@ -232,7 +231,6 @@ const HOTKEY_LABELS: Record<UILang, Record<keyof HotkeyConfig, string>> = {
 };
 
 const MODIFIER_NAMES = new Set(['Control', 'Shift', 'Alt', 'Meta']);
-const MODIFIER_PREFIXES = ['Ctrl', 'Alt', 'Shift', 'Meta'];
 
 function normalizeRecordedKey(event: React.KeyboardEvent<HTMLInputElement>): string | null {
   if (event.code === 'Backquote') return 'Backquote';
@@ -271,14 +269,14 @@ const GLOBAL_REQUIRED: Array<keyof HotkeyConfig> = ['toggleShowHide', 'insideMod
 function ComboKeys({ combo }: { combo: string }) {
   const parts = combo.split('+').filter(Boolean);
   if (!parts.length) {
-    return <span className="text-xs text-slate-400 dark:text-zinc-500">—</span>;
+    return <span className="text-[11px] text-slate-400 dark:text-zinc-500">—</span>;
   }
   return (
     <span className="flex items-center gap-1">
       {parts.map((part, index) => (
         <kbd
           key={`${part}-${index}`}
-          className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wide text-slate-600 shadow-[0_1px_0_rgba(15,23,42,0.08)] dark:border-zinc-700 dark:bg-zinc-800 dark:text-slate-200 dark:shadow-[0_1px_0_rgba(0,0,0,0.4)]"
+          className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[11px] font-medium text-slate-600 shadow-[0_1px_0_rgba(15,23,42,0.06)] dark:border-zinc-700 dark:bg-zinc-900 dark:text-slate-200 dark:shadow-none"
         >
           {part}
         </kbd>
@@ -287,9 +285,9 @@ function ComboKeys({ combo }: { combo: string }) {
   );
 }
 
-const WINDOW_PRESETS: Array<{ ratio: number; label: 'presetHalf' | 'presetThird' | 'presetTwoThirds' | 'presetThreeQuarters' }> = [
-  { ratio: 0.5, label: 'presetHalf' },
+const RATIO_TICKS: Array<{ ratio: number; label: 'presetThird' | 'presetHalf' | 'presetTwoThirds' | 'presetThreeQuarters' }> = [
   { ratio: 1 / 3, label: 'presetThird' },
+  { ratio: 0.5, label: 'presetHalf' },
   { ratio: 2 / 3, label: 'presetTwoThirds' },
   { ratio: 0.75, label: 'presetThreeQuarters' }
 ];
@@ -329,6 +327,7 @@ export function MainMenu({
   const inputRefs = useRef<Partial<Record<keyof HotkeyConfig, HTMLInputElement | null>>>({});
   const t = TEXT[lang];
   const labels = HOTKEY_LABELS[lang];
+  const viewport = useViewport();
 
   useEffect(() => {
     setEditingHotkeys(hotkeys);
@@ -347,7 +346,8 @@ export function MainMenu({
     return set;
   }, [hotkeyConflicts]);
 
-  const duplicateKeys = useMemo(() => {    const seen = new Map<string, number>();
+  const duplicateKeys = useMemo(() => {
+    const seen = new Map<string, number>();
     hotkeyKeys.forEach((key) => {
       const value = editingHotkeys[key]?.trim().toUpperCase();
       if (!value) return;
@@ -402,31 +402,33 @@ export function MainMenu({
 
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.96, y: 16 }}
+      initial={{ opacity: 0, scale: 0.97, y: 12 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.96, y: 16 }}
-      transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-      className="pointer-events-auto absolute bottom-6 left-24 z-[2147483647] flex max-h-[calc(100vh-48px)] w-[360px] flex-col overflow-hidden rounded-[22px] border border-black/[0.06] bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.3)] backdrop-blur-2xl dark:border-white/10 dark:bg-zinc-950/95"
+      exit={{ opacity: 0, scale: 0.97, y: 12 }}
+      transition={{ type: 'spring', damping: 30, stiffness: 340 }}
+      className="pointer-events-auto absolute bottom-6 left-24 z-[2147483647] flex max-h-[calc(100vh-40px)] w-[368px] flex-col overflow-hidden rounded-[26px] border border-slate-200 bg-white/97 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.28)] backdrop-blur-2xl dark:border-[#272727] dark:bg-black/95"
     >
       {/* Header */}
-      <div className="flex shrink-0 items-start justify-between px-5 pt-5">
+      <div className="flex shrink-0 items-start justify-between px-4 pt-4">
         <div>
-          <h2 className="text-[13px] font-semibold tracking-tight text-slate-900 dark:text-white">{t.settings}</h2>
-          <p className="mt-0.5 text-[11px] font-medium text-slate-400 dark:text-zinc-500">
+          <h2 className="text-[15px] font-bold leading-5 tracking-tight text-slate-900 dark:text-white">
+            {t.settings}
+          </h2>
+          <p className="mt-0.5 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">
             {t.footerVersion} {__APP_VERSION__}
           </p>
         </div>
         <button
           onClick={onClose}
-          className="rounded-full bg-black/[0.06] p-1.5 transition-colors hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20"
+          className="flex h-[26px] w-[26px] items-center justify-center rounded-full bg-black/[0.06] text-slate-600 transition-colors hover:bg-black/10 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white/20"
           type="button"
         >
-          <X size={16} className="text-slate-600 dark:text-slate-300" />
+          <X size={14} />
         </button>
       </div>
 
       {/* Segmented navigation */}
-      <div className="mx-4 mt-4 flex shrink-0 gap-1 rounded-xl bg-black/[0.05] p-1 dark:bg-white/[0.06]">
+      <div className="mx-4 mt-3 flex shrink-0 gap-[2px] rounded-[10px] bg-black/[0.05] p-[3px] dark:bg-white/[0.06]">
         {tabs.map((tab) => {
           const active = view === tab.id;
           return (
@@ -434,10 +436,10 @@ export function MainMenu({
               key={tab.id}
               type="button"
               onClick={() => setView(tab.id)}
-              className={`relative flex flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-lg px-1 py-1.5 text-[11px] transition-colors ${
+              className={`flex h-7 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-lg text-[11px] leading-none transition-colors ${
                 active
-                  ? 'bg-white font-semibold text-slate-900 shadow-sm dark:bg-zinc-800 dark:text-white'
-                  : 'font-medium text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
+                  ? 'bg-white font-semibold text-slate-900 dark:bg-zinc-800 dark:text-white'
+                  : 'font-normal text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
               }`}
             >
               {tab.icon}
@@ -448,16 +450,16 @@ export function MainMenu({
       </div>
 
       {/* Body */}
-      <div className="min-h-0 flex-1 overflow-y-auto p-4 scrollbar-hide">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 scrollbar-hide">
         <AnimatePresence mode="wait" initial={false}>
           {view === 'appearance' && (
             <motion.div
               key="appearance"
-              initial={{ opacity: 0, y: 6 }}
+              initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
+              exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="space-y-3"
+              className="space-y-3.5"
             >
               <Card>
                 <Row label={t.theme}>
@@ -487,11 +489,14 @@ export function MainMenu({
               </Card>
 
               <Card>
-                <div className="px-4 py-3">
-                  <div className="flex items-center gap-2 text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                    <Droplet size={15} className="text-brand-500" />
-                    <span>{t.opacity}</span>
-                    <span className="ml-auto font-mono text-[11px] text-slate-400 dark:text-zinc-500">{opacity}%</span>
+                <div className="px-3.5 pb-3.5 pt-3">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                      {t.opacity}
+                    </span>
+                    <span className="ml-auto font-mono text-[11px] tabular-nums text-slate-400 dark:text-zinc-500">
+                      {opacity}%
+                    </span>
                   </div>
                   <input
                     type="range"
@@ -499,9 +504,11 @@ export function MainMenu({
                     max="100"
                     value={opacity}
                     onChange={(e) => setOpacity(parseInt(e.target.value, 10))}
-                    className="mt-3 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-500 dark:bg-zinc-700"
+                    className="mt-2.5 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-500 dark:bg-zinc-700"
                   />
-                  <p className="mt-2.5 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.opacityHint}</p>
+                  <p className="mt-2 text-[11px] leading-[1.5] text-slate-400 dark:text-zinc-500">
+                    {t.opacityHint}
+                  </p>
                 </div>
               </Card>
             </motion.div>
@@ -510,30 +517,23 @@ export function MainMenu({
           {view === 'window' && (
             <motion.div
               key="window"
-              initial={{ opacity: 0, y: 6 }}
+              initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
+              exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="space-y-3"
+              className="space-y-3.5"
             >
               <Card>
-                <div className="px-4 pt-3.5">
-                  <div className="flex items-center gap-2 text-[11px] font-medium text-slate-700 dark:text-slate-200">
-                    <Monitor size={15} className="text-brand-500" />
-                    <span>{t.presets}</span>
+                <div className="px-3.5 pb-3 pt-3">
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                      {t.presets}
+                    </span>
+                    <span className="ml-auto font-mono text-[11px] tabular-nums text-slate-400 dark:text-zinc-500">
+                      {Math.round(viewport.width)} × {Math.round(viewport.height)}
+                    </span>
                   </div>
-                  <div className="mt-2.5 flex gap-1.5 pb-3.5">
-                    {WINDOW_PRESETS.map((preset) => (
-                      <button
-                        key={preset.label}
-                        type="button"
-                        onClick={() => onResizeRatio(preset.ratio)}
-                        className="flex-1 rounded-lg border border-slate-200 bg-white py-1.5 font-mono text-[11px] font-semibold text-slate-600 transition-colors hover:border-brand-400 hover:text-brand-700 dark:border-zinc-700 dark:bg-zinc-800/60 dark:text-slate-300 dark:hover:border-brand-500 dark:hover:text-brand-300"
-                      >
-                        {t[preset.label]}
-                      </button>
-                    ))}
-                  </div>
+                  <RatioBar lang={lang} viewportWidth={viewport.width} onResize={onResizeRatio} />
                 </div>
               </Card>
 
@@ -574,11 +574,11 @@ export function MainMenu({
           {view === 'shortcuts' && (
             <motion.div
               key="shortcuts"
-              initial={{ opacity: 0, y: 6 }}
+              initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
+              exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="space-y-3"
+              className="space-y-3.5"
             >
               <Card>
                 <SwitchRow
@@ -592,17 +592,17 @@ export function MainMenu({
               </Card>
 
               <Card>
-                <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5 dark:border-zinc-800">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-zinc-500">
+                <div className="flex items-center justify-between border-b border-slate-200/80 px-3.5 py-2 dark:border-zinc-800">
+                  <span className="text-[11px] font-semibold text-slate-400 dark:text-zinc-500">
                     {t.shortcutTable}
                   </span>
                   {recordError ? (
-                    <span className="flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                    <span className="flex items-center gap-1 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                       <ShieldAlert size={11} />
                       {recordError}
                     </span>
                   ) : (
-                    <span className="text-[10px] text-slate-400 dark:text-zinc-500">{t.cancel}</span>
+                    <span className="text-[11px] text-slate-400 dark:text-zinc-500">{t.cancel}</span>
                   )}
                 </div>
                 <div className={hotkeysEnabled ? '' : 'pointer-events-none opacity-45'}>
@@ -617,12 +617,12 @@ export function MainMenu({
                           index === hotkeyKeys.length - 1 ? '' : 'border-b border-slate-100 dark:border-zinc-800/80'
                         }`}
                       >
-                        <span className="w-[88px] shrink-0">
-                          <span className="block truncate text-[11px] text-slate-500 dark:text-slate-400">
+                        <span className="w-[92px] shrink-0">
+                          <span className="block truncate text-[12px] font-medium leading-4 text-slate-700 dark:text-slate-200">
                             {labels[key]}
                           </span>
                           <span
-                            className={`mt-px block text-[10px] ${
+                            className={`mt-px block text-[11px] leading-4 ${
                               isConflict
                                 ? 'text-rose-600 dark:text-rose-400'
                                 : bindingHasModifier(editingHotkeys[key])
@@ -647,9 +647,9 @@ export function MainMenu({
                           onBlur={() => setRecordingKey((current) => (current === key ? null : current))}
                           onKeyDown={(event) => handleRecordKeyDown(key, event)}
                           placeholder={isRecording ? t.recording : ''}
-                          className={`min-w-0 flex-1 rounded-md border px-1.5 py-[3px] font-mono text-[11px] tabular-nums outline-none transition-colors ${
+                          className={`min-w-0 flex-1 rounded-md border px-1.5 py-1 font-mono text-[11px] tabular-nums outline-none transition-colors ${
                             isRecording
-                              ? 'border-brand-400 bg-brand-500/10 text-brand-700 ring-2 ring-brand-500/25 dark:border-brand-500 dark:text-brand-300'
+                              ? 'border-brand-400 bg-brand-500/10 text-brand-700 ring-2 ring-brand-500/20 dark:border-brand-500 dark:text-brand-300'
                               : isConflict
                                 ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-600/60 dark:bg-rose-500/10 dark:text-rose-300'
                                 : isDuplicate
@@ -660,7 +660,7 @@ export function MainMenu({
                         <button
                           type="button"
                           onClick={() => startRecording(key)}
-                          className="shrink-0 rounded-md px-1.5 py-[3px] text-[10px] font-medium text-slate-400 transition-colors hover:bg-black/[0.04] hover:text-brand-700 dark:text-zinc-500 dark:hover:bg-white/[0.06] dark:hover:text-brand-300"
+                          className="shrink-0 rounded-md px-1.5 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-black/[0.04] hover:text-brand-700 dark:text-zinc-500 dark:hover:bg-white/[0.06] dark:hover:text-brand-300"
                         >
                           {t.record}
                         </button>
@@ -670,10 +670,10 @@ export function MainMenu({
                 </div>
               </Card>
 
-              <p className="px-1 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.shortcutHint}</p>
-              <p className="px-1 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.scopeNote}</p>
+              <p className="px-1 text-[11px] leading-[1.6] text-slate-400 dark:text-zinc-500">{t.shortcutHint}</p>
+              <p className="px-1 text-[11px] leading-[1.6] text-slate-400 dark:text-zinc-500">{t.scopeNote}</p>
               {hotkeyConflicts.length > 0 && (
-                <p className="px-1 text-[11px] leading-4 text-rose-600 dark:text-rose-400">
+                <p className="px-1 text-[11px] leading-[1.6] text-rose-600 dark:text-rose-400">
                   {t.conflictNote}
                 </p>
               )}
@@ -685,7 +685,7 @@ export function MainMenu({
                     onResetHotkeys();
                     setRecordError(null);
                   }}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-zinc-700 dark:text-slate-300 dark:hover:bg-zinc-800/60"
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-zinc-700 dark:text-slate-300 dark:hover:bg-zinc-900"
                 >
                   <RotateCcw size={12} /> {t.reset}
                 </button>
@@ -709,26 +709,28 @@ export function MainMenu({
           {view === 'recovery' && (
             <motion.div
               key="recovery"
-              initial={{ opacity: 0, y: 6 }}
+              initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
+              exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="space-y-3"
+              className="space-y-3.5"
             >
-              <div className="rounded-2xl border border-brand-500/25 bg-brand-500/[0.07] p-3.5 dark:border-brand-500/30 dark:bg-brand-500/10">
+              <div className="rounded-[14px] border border-brand-500/25 bg-brand-500/[0.07] p-3.5 dark:border-brand-500/30 dark:bg-brand-500/10">
                 <button
                   type="button"
                   onClick={onRescueWindow}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-500 py-2 text-[11px] font-semibold text-white shadow-sm shadow-brand-500/25 transition-colors hover:bg-brand-700"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-500 py-2 text-[12px] font-semibold text-white shadow-sm shadow-brand-500/25 transition-colors hover:bg-brand-700"
                 >
                   <LifeBuoy size={15} />
                   {t.rescuePrimary}
                 </button>
-                <p className="mt-2.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{t.rescueHint}</p>
+                <p className="mt-2 text-[11px] leading-[1.5] text-slate-500 dark:text-slate-400">
+                  {t.rescueHint}
+                </p>
               </div>
 
               <Card>
-                <div className="px-4 pb-1 pt-3.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-zinc-500">
+                <div className="px-3.5 pb-0.5 pt-3 text-[11px] font-semibold text-slate-400 dark:text-zinc-500">
                   {t.rescueSteps}
                 </div>
                 <RecoveryRow label={t.rescueHotkey} hint={t.rescueAlways}>
@@ -746,7 +748,7 @@ export function MainMenu({
                 <button
                   type="button"
                   onClick={onAbout}
-                  className="flex w-full items-center gap-2.5 border-b border-slate-100 px-4 py-3 text-left text-[11px] font-medium text-slate-700 transition-colors hover:bg-black/[0.03] dark:border-zinc-800 dark:text-slate-200 dark:hover:bg-white/[0.04]"
+                  className="flex w-full items-center gap-2.5 border-b border-slate-200/80 px-3.5 py-3 text-left text-[12px] font-medium text-slate-700 transition-colors hover:bg-black/[0.03] dark:border-zinc-800 dark:text-slate-200 dark:hover:bg-white/[0.04]"
                 >
                   <Info size={15} className="text-slate-400 dark:text-zinc-500" />
                   <span className="flex-1">{t.about}</span>
@@ -755,14 +757,14 @@ export function MainMenu({
                 <button
                   type="button"
                   onClick={onQuit}
-                  className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-[11px] font-medium text-rose-600 transition-colors hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                  className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left text-[12px] font-medium text-rose-600 transition-colors hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
                 >
                   <LogOut size={15} />
                   <span className="flex-1">{t.quit}</span>
                 </button>
               </Card>
 
-              <div className="flex items-center justify-center gap-1.5 pb-1 text-[10px] text-slate-300 dark:text-zinc-600">
+              <div className="flex items-center justify-center gap-1.5 pb-1 text-[11px] text-slate-300 dark:text-zinc-600">
                 <Globe size={11} />
                 <span>DI-Viewer · {__APP_VERSION__}</span>
               </div>
@@ -774,9 +776,85 @@ export function MainMenu({
   );
 }
 
+/**
+ * A continuous width bar instead of four preset buttons: the track is the
+ * monitor width, so dragging it reads as "how wide is this window" and the
+ * ticks are still exact stops. Live-resizes with a short debounce.
+ */
+function RatioBar({
+  lang,
+  viewportWidth,
+  onResize
+}: {
+  lang: UILang;
+  viewportWidth: number;
+  onResize: (ratio: number) => void;
+}) {
+  const t = TEXT[lang];
+  const monitors = typeof window !== 'undefined' && window.screen?.availWidth ? window.screen.availWidth : 1920;
+  const actual = Math.max(20, Math.min(100, Math.round((viewportWidth / monitors) * 100)));
+  const [value, setValue] = useState(actual);
+  const dragging = useRef(false);
+  const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    if (!dragging.current) setValue(actual);
+  }, [actual]);
+
+  useEffect(() => () => {
+    if (timer.current) window.clearTimeout(timer.current);
+  }, []);
+
+  const commit = (next: number) => {
+    const clamped = Math.max(20, Math.min(100, Math.round(next)));
+    setValue(clamped);
+    dragging.current = true;
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      dragging.current = false;
+      onResize(clamped / 100);
+    }, 160);
+  };
+
+  return (
+    <>
+      <input
+        type="range"
+        min="20"
+        max="100"
+        step="1"
+        value={value}
+        onChange={(e) => commit(parseInt(e.target.value, 10))}
+        className="mt-2.5 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-500 dark:bg-zinc-700"
+        aria-label={t.presets}
+      />
+      <div className="mt-2 flex items-center justify-between">
+        {RATIO_TICKS.map((tick) => {
+          const percent = Math.round(tick.ratio * 100);
+          const active = Math.abs(value - percent) <= 1;
+          return (
+            <button
+              key={tick.label}
+              type="button"
+              onClick={() => commit(percent)}
+              className={`rounded px-1 py-0.5 font-mono text-[11px] tabular-nums transition-colors ${
+                active
+                  ? 'font-semibold text-brand-700 dark:text-brand-300'
+                  : 'text-slate-400 hover:text-brand-700 dark:text-zinc-500 dark:hover:text-brand-300'
+              }`}
+            >
+              {t[tick.label]}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+}
+
 function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white/90 shadow-[0_1px_2px_rgba(15,23,42,0.04)] dark:border-zinc-800 dark:bg-zinc-900/70">
+    <div className="overflow-hidden rounded-[14px] border border-slate-200 bg-white dark:border-[#272727] dark:bg-zinc-950">
       {children}
     </div>
   );
@@ -785,11 +863,11 @@ function Card({ children }: { children: React.ReactNode }) {
 function Row({ label, children, last }: { label: string; children: React.ReactNode; last?: boolean }) {
   return (
     <div
-      className={`flex items-center gap-3 px-4 py-2.5 ${
-        last ? '' : 'border-b border-slate-100 dark:border-zinc-800'
+      className={`flex h-11 items-center gap-3 px-3.5 ${
+        last ? '' : 'border-b border-slate-200/80 dark:border-zinc-800'
       }`}
     >
-      <span className="flex-1 text-[11px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+      <span className="flex-1 text-[12px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
       {children}
     </div>
   );
@@ -814,15 +892,15 @@ function SwitchRow({
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${
-        last ? '' : 'border-b border-slate-100 dark:border-zinc-800'
+      className={`flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${
+        last ? '' : 'border-b border-slate-200/80 dark:border-zinc-800'
       }`}
     >
       <span className="text-slate-400 dark:text-zinc-500">{icon}</span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[11px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+        <span className="block text-[12px] font-medium leading-4 text-slate-700 dark:text-slate-200">{label}</span>
         {hint ? (
-          <span className="mt-0.5 block truncate text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{hint}</span>
+          <span className="mt-0.5 block truncate text-[11px] leading-[1.5] text-slate-400 dark:text-zinc-500">{hint}</span>
         ) : null}
       </span>
       <span
@@ -853,13 +931,13 @@ function RecoveryRow({
 }) {
   return (
     <div
-      className={`flex items-center gap-3 px-4 py-2.5 ${
-        last ? '' : 'border-b border-slate-100 dark:border-zinc-800'
+      className={`flex items-center gap-3 px-3.5 py-2.5 ${
+        last ? '' : 'border-b border-slate-200/80 dark:border-zinc-800'
       }`}
     >
       <span className="min-w-0 flex-1">
-        <span className="block text-[11px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
-        {hint ? <span className="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{hint}</span> : null}
+        <span className="block text-[12px] font-medium leading-4 text-slate-700 dark:text-slate-200">{label}</span>
+        {hint ? <span className="mt-0.5 block text-[11px] leading-[1.5] text-slate-400 dark:text-zinc-500">{hint}</span> : null}
       </span>
       {children}
     </div>
@@ -884,7 +962,7 @@ function Segmented<T extends string>({
             key={option.id}
             type="button"
             onClick={() => onChange(option.id)}
-            className={`flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] font-medium transition-colors ${
+            className={`flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] font-medium leading-4 transition-colors ${
               active
                 ? 'bg-white text-slate-900 shadow-sm dark:bg-zinc-700 dark:text-white'
                 : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
