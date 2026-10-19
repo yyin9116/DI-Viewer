@@ -29,6 +29,8 @@ export interface FrontendState {
   uiLang: string;
   bookmarks: BookmarkItem[];
   hotkeys: HotkeyConfig;
+  /** `name=combo: reason` for bindings the OS refused (already owned). */
+  hotkeyConflicts: string[];
 }
 
 export interface TabSessionItem {

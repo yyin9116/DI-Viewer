@@ -5,6 +5,13 @@ description = "DI-Viewer Tauri Edition"
 authors = ["Yin"]
 edition = "2021"
 
+[features]
+# Emit the embedded-resource build (WebviewUrl::App served from the bundled
+# assets) instead of pointing the window at the dev server. Release builds
+# must pass --features custom-protocol;  does that for us.
+default = []
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

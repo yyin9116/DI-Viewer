@@ -148,6 +148,8 @@ struct FrontendState {
     ui_lang: String,
     bookmarks: Vec<BookmarkItem>,
     hotkeys: HotkeyConfig,
+    /// `name=combo` entries the OS refused; the settings panel marks those rows.
+    hotkey_conflicts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -206,6 +208,10 @@ struct AppState {
     /// Labels are never derived from the tab index (indexes shift on close),
     /// so a tab keeps the same webview for its whole lifetime.
     next_tab_seq: AtomicU64,
+    /// Bindings the OS refused (another application already owns that combo).
+    /// Surfaced to the settings panel instead of aborting startup: a single
+    /// occupied shortcut must never make the app unlaunchable.
+    hotkey_conflicts: Mutex<Vec<String>>,
     log_store: Mutex<Vec<LogEntry>>,
 }
 
@@ -1003,6 +1009,11 @@ fn snap_browser_to_edge_for_label(app: &AppHandle, label: &str) -> AppResult<()>
     };
 
     let browser = browser_window_by_label(app, label)?;
+    // Snapping a maximized/fullscreen window means SetWindowPos on it, which
+    // Windows honours by restoring it to the monitor origin.
+    if browser.is_maximized().unwrap_or(false) || browser.is_fullscreen().unwrap_or(false) {
+        return Ok(());
+    }
     let Some(monitor) = browser
         .current_monitor()
         .map_err(|err| format!("Read monitor failed: {err}"))?
@@ -1048,16 +1059,21 @@ fn snap_browser_to_edge_for_label(app: &AppHandle, label: &str) -> AppResult<()>
 }
 
 fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) -> AppResult<()> {
-    if do_snap {
-        let _ = snap_browser_to_edge_for_label(app, label);
-    }
-
     let browser = browser_window_by_label(app, label)?;
     // Never persist while minimized: Windows reports the iconic rect
     // (-32000, -32000, 0x0), which would poison the saved geometry and
     // make the next launch restore the window off-screen.
     if browser.is_minimized().unwrap_or(false) {
         return Ok(());
+    }
+    // A maximized / fullscreen window reports the maximized rect (often with a
+    // negative origin) instead of the restore geometry. Snapping it would call
+    // SetWindowPos on a maximized window, which un-maximizes it and drops it at
+    // the monitor origin - the "it zooms then gets yanked to the corner" bug.
+    let maximized_now = browser.is_maximized().unwrap_or(false);
+    let fullscreen_now = browser.is_fullscreen().unwrap_or(false);
+    if do_snap && !maximized_now && !fullscreen_now {
+        let _ = snap_browser_to_edge_for_label(app, label);
     }
     let position = browser
         .outer_position()
@@ -1101,14 +1117,16 @@ fn persist_browser_state_for_label(app: &AppHandle, label: &str, do_snap: bool) 
         if is_active_tab && !current_url.trim().is_empty() {
             persist.last_url = current_url.clone();
         }
-        if !persist.window_position_locked {
-            persist.window_start_x = position.x as f64 / scale;
-            persist.window_start_y = position.y as f64 / scale;
+        if !maximized_now && !fullscreen_now {
+            if !persist.window_position_locked {
+                persist.window_start_x = position.x as f64 / scale;
+                persist.window_start_y = position.y as f64 / scale;
+            }
+            // Persist inner size because create uses .inner_size(...).
+            // Using outer size here causes cumulative growth each tab/window cycle.
+            persist.window_width = (inner.width as f64 / scale).round();
+            persist.window_height = (inner.height as f64 / scale).round();
         }
-        // Persist inner size because create uses .inner_size(...).
-        // Using outer size here causes cumulative growth each tab/window cycle.
-        persist.window_width = (inner.width as f64 / scale).round();
-        persist.window_height = (inner.height as f64 / scale).round();
         if is_active_tab {
             persist.window_visible = visible;
             persist.window_maximized = maximized;
@@ -1252,7 +1270,7 @@ fn set_shell_opacity_impl(app: &AppHandle, opacity: f64) -> AppResult<f64> {
 }
 
 #[tauri::command]
-fn set_shell_opacity(app: AppHandle, opacity: f64) -> AppResult<f64> {
+async fn set_shell_opacity(app: AppHandle, opacity: f64) -> AppResult<f64> {
     set_shell_opacity_impl(&app, opacity)
 }
 
@@ -1500,14 +1518,14 @@ fn rescue_window_impl(app: &AppHandle) -> AppResult<()> {
 }
 
 #[tauri::command]
-fn rescue_window(app: AppHandle) -> AppResult<()> {
+async fn rescue_window(app: AppHandle) -> AppResult<()> {
     rescue_window_impl(&app)
 }
 
 /// Toggle the user-configurable global shortcuts without losing the rescued
 /// window path: the fixed rescue shortcut is always re-registered.
 #[tauri::command]
-fn set_hotkeys_enabled(app: AppHandle, state: tauri::State<AppState>, enabled: bool) -> AppResult<bool> {
+async fn set_hotkeys_enabled(app: AppHandle, state: tauri::State<'_, AppState>, enabled: bool) -> AppResult<bool> {
     update_persist(&state, |persist| {
         persist.hotkeys_enabled = enabled;
     })?;
@@ -1518,7 +1536,7 @@ fn set_hotkeys_enabled(app: AppHandle, state: tauri::State<AppState>, enabled: b
             .map_err(|_| "State lock poisoned".to_string())?;
         locked.hotkeys.clone()
     };
-    register_hotkeys(&app, &config, enabled)?;
+    register_hotkeys(&app, &config, enabled);
     Ok(enabled)
 }
 
@@ -1624,9 +1642,15 @@ fn run_hotkey_action(app: &AppHandle, action: HotkeyAction) -> AppResult<()> {
     }
 }
 
-fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig, enabled: bool) -> AppResult<()> {
+/// (Re)registers the OS-level shortcuts. Never fails: a binding another
+/// application already owns is recorded as a conflict and surfaced in the
+/// settings panel. Aborting the whole app because one combo is taken is how
+/// 1.1.21 could not start at all when `Ctrl+Alt+P` happened to be in use.
+fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig, enabled: bool) {
     let manager = app.global_shortcut();
     let _ = manager.unregister_all();
+
+    let mut conflicts: Vec<String> = Vec::new();
 
     // The rescue shortcut is intentionally not user-editable and is registered
     // even when the user has switched global hotkeys off: it is the documented
@@ -1637,14 +1661,11 @@ fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig, enabled: bool) -> Ap
         }
     }) {
         push_log(app, "native", "register_rescue_hotkey", format!("failed:{err}"));
+        conflicts.push(format!("rescue={RESCUE_SHORTCUT}: {err}"));
     }
 
-    if !enabled {
-        push_log(app, "native", "register_hotkeys", "disabled");
-        return Ok(());
-    }
-
-    let mappings = [
+    if enabled {
+        let mappings = [
         (
             "togglePlayPause",
             config.toggle_play_pause.as_str(),
@@ -1697,44 +1718,61 @@ fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig, enabled: bool) -> Ap
         ),
     ];
 
-    let mut failures = Vec::new();
-    for (name, shortcut, action) in mappings {
-        let key = shortcut.trim();
-        if key.is_empty() {
-            continue;
-        }
-        let key = if key == "\u{0060}" { "Backquote" } else { key };
-        if key.eq_ignore_ascii_case(RESCUE_SHORTCUT) {
-            // The rescue shortcut is reserved; a user binding on top of it would
-            // fail to register and take the whole save down with it.
-            push_log(app, "native", "register_hotkeys", format!("reserved:{name}"));
-            continue;
-        }
-        if !binding_is_global(key) {
-            // No modifier -> registered nowhere at the OS level. The shell
-            // matches it on keydown and suppresses it while an IME composition
-            // is open or an editable element has focus, so bare keys stay
-            // usable inside the viewer without touching other apps' typing.
-            push_log(app, "native", "register_hotkeys", format!("in_app:{name}={key}"));
-            continue;
-        }
-        let result = manager.on_shortcut(key, move |app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                let _ = run_hotkey_action(app, action);
+        let mut claimed: HashSet<String> = HashSet::new();
+        for (name, shortcut, action) in mappings {
+            let key = shortcut.trim();
+            if key.is_empty() {
+                continue;
             }
-        });
-        if let Err(err) = result {
-            failures.push(format!("{name}={key}: {err}"));
+            let key = if key == "\u{0060}" { "Backquote" } else { key };
+            if key.eq_ignore_ascii_case(RESCUE_SHORTCUT) {
+                // The rescue shortcut is reserved and already registered above.
+                push_log(app, "native", "register_hotkeys", format!("reserved:{name}"));
+                continue;
+            }
+            if !binding_is_global(key) {
+                // No modifier -> registered nowhere at the OS level. The shell
+                // matches it on keydown and suppresses it while an IME
+                // composition is open or an editable element has focus, so bare
+                // keys stay usable inside the viewer without touching other
+                // apps' typing.
+                push_log(app, "native", "register_hotkeys", format!("in_app:{name}={key}"));
+                continue;
+            }
+            // Two actions bound to the same combo: the OS would reject the
+            // second, so claim the slot ourselves and report it once.
+            if !claimed.insert(key.to_ascii_lowercase()) {
+                push_log(app, "native", "register_hotkeys", format!("duplicate:{name}={key}"));
+                conflicts.push(format!("{name}={key}: duplicate"));
+                continue;
+            }
+            let result = manager.on_shortcut(key, move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    let _ = run_hotkey_action(app, action);
+                }
+            });
+            if let Err(err) = result {
+                push_log(app, "native", "register_hotkeys", format!("conflict:{name}={key}"));
+                conflicts.push(format!("{name}={key}: {err}"));
+            }
         }
+    } else {
+        push_log(app, "native", "register_hotkeys", "disabled");
     }
 
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "Hotkey registration failed: {}",
-            failures.join(" | ")
-        ))
+    push_log(
+        app,
+        "native",
+        "register_hotkeys",
+        format!("done:conflicts={}", conflicts.len()),
+    );
+    {
+        let state = app.state::<AppState>();
+        let mut locked = state
+            .hotkey_conflicts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *locked = conflicts;
     }
 }
 
@@ -2125,7 +2163,7 @@ fn current_dock_color(state: &AppState) -> String {
 }
 
 #[tauri::command]
-fn get_state(app: AppHandle, state: tauri::State<AppState>) -> AppResult<FrontendState> {
+async fn get_state(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResult<FrontendState> {
     let mut snapshot = {
         let locked = state
             .data
@@ -2160,11 +2198,16 @@ fn get_state(app: AppHandle, state: tauri::State<AppState>) -> AppResult<Fronten
         ui_lang: current_ui_lang(&state),
         bookmarks: snapshot.0.bookmarks,
         hotkeys: snapshot.1,
+        hotkey_conflicts: state
+            .hotkey_conflicts
+            .lock()
+            .map(|locked| locked.clone())
+            .unwrap_or_default(),
     })
 }
 
 #[tauri::command]
-fn get_hotkeys(state: tauri::State<AppState>) -> AppResult<HotkeyConfig> {
+async fn get_hotkeys(state: tauri::State<'_, AppState>) -> AppResult<HotkeyConfig> {
     let hotkeys = {
         let locked = state
             .data
@@ -2176,14 +2219,14 @@ fn get_hotkeys(state: tauri::State<AppState>) -> AppResult<HotkeyConfig> {
 }
 
 #[tauri::command]
-fn get_ui_language(state: tauri::State<AppState>) -> AppResult<String> {
+async fn get_ui_language(state: tauri::State<'_, AppState>) -> AppResult<String> {
     Ok(current_ui_lang(&state))
 }
 
 #[tauri::command]
-fn set_ui_language(
+async fn set_ui_language(
     app: AppHandle,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     lang: String,
 ) -> AppResult<String> {
     let normalized = normalize_ui_lang(&lang).unwrap_or("zh");
@@ -2202,12 +2245,12 @@ fn set_ui_language(
 }
 
 #[tauri::command]
-fn get_dock_color(state: tauri::State<AppState>) -> AppResult<String> {
+async fn get_dock_color(state: tauri::State<'_, AppState>) -> AppResult<String> {
     Ok(current_dock_color(&state))
 }
 
 #[tauri::command]
-fn set_dock_color(state: tauri::State<AppState>, color: String) -> AppResult<String> {
+async fn set_dock_color(state: tauri::State<'_, AppState>, color: String) -> AppResult<String> {
     let normalized = normalize_dock_color(&color).to_string();
     update_persist(&state, |persist| {
         persist.dock_color = normalized.clone();
@@ -2216,7 +2259,7 @@ fn set_dock_color(state: tauri::State<AppState>, color: String) -> AppResult<Str
 }
 
 #[tauri::command]
-fn navigate(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppResult<String> {
+async fn navigate(app: AppHandle, state: tauri::State<'_, AppState>, url: String) -> AppResult<String> {
     let normalized = normalize_url_with_home(&url, &state.home_url);
     push_log(&app, "ui", "navigate", format!("start:{}", normalized));
     let browser = browser_window(&app)?;
@@ -2227,63 +2270,64 @@ fn navigate(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppRe
 }
 
 #[tauri::command]
-fn go_home(app: AppHandle, state: tauri::State<AppState>) -> AppResult<String> {
-    navigate(app, state.clone(), state.home_url.clone())
+async fn go_home(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResult<String> {
+    let home = state.home_url.clone();
+    navigate(app, state, home).await
 }
 
 #[tauri::command]
-fn toggle_show_hide(app: AppHandle) -> AppResult<bool> {
+async fn toggle_show_hide(app: AppHandle) -> AppResult<bool> {
     toggle_show_hide_impl(&app)
 }
 
 #[tauri::command]
-fn toggle_inside_mode(app: AppHandle) -> AppResult<bool> {
+async fn toggle_inside_mode(app: AppHandle) -> AppResult<bool> {
     toggle_inside_mode_impl(&app)
 }
 
 #[tauri::command]
-fn set_inside_mode(app: AppHandle, inside: bool) -> AppResult<bool> {
+async fn set_inside_mode(app: AppHandle, inside: bool) -> AppResult<bool> {
     set_inside_mode_command(app, inside)
 }
 
 #[tauri::command]
-fn toggle_on_top(app: AppHandle) -> AppResult<bool> {
+async fn toggle_on_top(app: AppHandle) -> AppResult<bool> {
     toggle_on_top_impl(&app)
 }
 
 #[tauri::command]
-fn set_opacity(app: AppHandle, opacity: f64) -> AppResult<f64> {
+async fn set_opacity(app: AppHandle, opacity: f64) -> AppResult<f64> {
     set_opacity_impl(&app, opacity)
 }
 
 #[tauri::command]
-fn increase_opacity(app: AppHandle) -> AppResult<f64> {
+async fn increase_opacity(app: AppHandle) -> AppResult<f64> {
     adjust_opacity_impl(&app, 0.1)
 }
 
 #[tauri::command]
-fn decrease_opacity(app: AppHandle) -> AppResult<f64> {
+async fn decrease_opacity(app: AppHandle) -> AppResult<f64> {
     adjust_opacity_impl(&app, -0.1)
 }
 
 #[tauri::command]
-fn toggle_lock_position(app: AppHandle) -> AppResult<bool> {
+async fn toggle_lock_position(app: AppHandle) -> AppResult<bool> {
     toggle_position_lock_impl(&app)
 }
 
 #[tauri::command]
-fn resize_to_ratio(app: AppHandle, ratio: f64) -> AppResult<f64> {
+async fn resize_to_ratio(app: AppHandle, ratio: f64) -> AppResult<f64> {
     resize_to_ratio_impl(&app, ratio)
 }
 
 #[tauri::command]
-fn get_bookmarks(state: tauri::State<AppState>) -> AppResult<Vec<BookmarkItem>> {
+async fn get_bookmarks(state: tauri::State<'_, AppState>) -> AppResult<Vec<BookmarkItem>> {
     bookmarks_snapshot(&state)
 }
 
 #[tauri::command]
-fn add_bookmark(
-    state: tauri::State<AppState>,
+async fn add_bookmark(
+    state: tauri::State<'_, AppState>,
     url: String,
     title: String,
 ) -> AppResult<Vec<BookmarkItem>> {
@@ -2291,17 +2335,17 @@ fn add_bookmark(
 }
 
 #[tauri::command]
-fn remove_bookmark(state: tauri::State<AppState>, url: String) -> AppResult<Vec<BookmarkItem>> {
+async fn remove_bookmark(state: tauri::State<'_, AppState>, url: String) -> AppResult<Vec<BookmarkItem>> {
     remove_bookmark_impl(&state, url)
 }
 
 #[tauri::command]
-fn list_tabs(state: tauri::State<AppState>) -> AppResult<TabSessionSnapshot> {
+async fn list_tabs(state: tauri::State<'_, AppState>) -> AppResult<TabSessionSnapshot> {
     tabs_snapshot(&state)
 }
 
 #[tauri::command]
-fn get_logs(state: tauri::State<AppState>) -> AppResult<Vec<LogEntry>> {
+async fn get_logs(state: tauri::State<'_, AppState>) -> AppResult<Vec<LogEntry>> {
     let logs = state
         .log_store
         .lock()
@@ -2378,7 +2422,7 @@ fn present_tab_window(app: &AppHandle, target_label: &str, from_label: &str) -> 
 }
 
 #[tauri::command]
-fn switch_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppResult<String> {
+async fn switch_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i32) -> AppResult<String> {
     push_log(&app, "ui", "switch_tab", format!("start:{}", index));
 
     let (idx, target_url, target_label, current_label) = {
@@ -2423,7 +2467,7 @@ fn switch_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppR
 }
 
 #[tauri::command]
-fn new_tab(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppResult<String> {
+async fn new_tab(app: AppHandle, state: tauri::State<'_, AppState>, url: String) -> AppResult<String> {
     push_log(&app, "ui", "new_tab", format!("start:{}", url));
 
     let target = normalize_url_with_home(
@@ -2475,7 +2519,7 @@ fn new_tab(app: AppHandle, state: tauri::State<AppState>, url: String) -> AppRes
 }
 
 #[tauri::command]
-fn close_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppResult<bool> {
+async fn close_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i32) -> AppResult<bool> {
     push_log(&app, "ui", "close_tab", format!("start:{}", index));
 
     struct ClosePlan {
@@ -2615,7 +2659,7 @@ fn close_tab(app: AppHandle, state: tauri::State<AppState>, index: i32) -> AppRe
 }
 
 #[tauri::command]
-fn minimize_browser(app: AppHandle) -> AppResult<()> {
+async fn minimize_browser(app: AppHandle) -> AppResult<()> {
     let browser = browser_window(&app)?;
     browser
         .minimize()
@@ -2623,17 +2667,17 @@ fn minimize_browser(app: AppHandle) -> AppResult<()> {
 }
 
 #[tauri::command]
-fn maximize_restore_browser(app: AppHandle) -> AppResult<bool> {
+async fn maximize_restore_browser(app: AppHandle) -> AppResult<bool> {
     maximize_restore_impl(&app)
 }
 
 #[tauri::command]
-fn video_action(app: AppHandle, action: String) -> AppResult<()> {
+async fn video_action(app: AppHandle, action: String) -> AppResult<()> {
     execute_video_action(&app, &action)
 }
 
 #[tauri::command]
-fn go_back(app: AppHandle) -> AppResult<String> {
+async fn go_back(app: AppHandle) -> AppResult<String> {
     let browser = browser_window(&app)?;
     browser
         .eval("window.history.back();")
@@ -2642,7 +2686,7 @@ fn go_back(app: AppHandle) -> AppResult<String> {
 }
 
 #[tauri::command]
-fn go_forward(app: AppHandle) -> AppResult<String> {
+async fn go_forward(app: AppHandle) -> AppResult<String> {
     let browser = browser_window(&app)?;
     browser
         .eval("window.history.forward();")
@@ -2651,7 +2695,7 @@ fn go_forward(app: AppHandle) -> AppResult<String> {
 }
 
 #[tauri::command]
-fn refresh_page(app: AppHandle) -> AppResult<String> {
+async fn refresh_page(app: AppHandle) -> AppResult<String> {
     let browser = browser_window(&app)?;
     browser
         .eval("window.location.reload();")
@@ -2660,7 +2704,7 @@ fn refresh_page(app: AppHandle) -> AppResult<String> {
 }
 
 #[tauri::command]
-fn toggle_sidebar(app: AppHandle) -> AppResult<bool> {
+async fn toggle_sidebar(app: AppHandle) -> AppResult<bool> {
     let state = app.state::<AppState>();
     let next = !state.sidebar_visible.load(Ordering::SeqCst);
     state.sidebar_visible.store(next, Ordering::SeqCst);
@@ -2685,14 +2729,14 @@ fn toggle_sidebar(app: AppHandle) -> AppResult<bool> {
 }
 
 #[tauri::command]
-fn open_control_panel(app: AppHandle) -> AppResult<()> {
+async fn open_control_panel(app: AppHandle) -> AppResult<()> {
     create_or_show_control_window(&app)
 }
 
 #[tauri::command]
-fn save_hotkeys(
+async fn save_hotkeys(
     app: AppHandle,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     config: HotkeyConfig,
 ) -> AppResult<()> {
     let sanitized = config.sanitize();
@@ -2711,11 +2755,12 @@ fn save_hotkeys(
             .map_err(|_| "State lock poisoned".to_string())?;
         locked.persist.hotkeys_enabled
     };
-    register_hotkeys(&app, &sanitized, enabled)
+    register_hotkeys(&app, &sanitized, enabled);
+    Ok(())
 }
 
 #[tauri::command]
-fn reset_hotkeys(app: AppHandle, state: tauri::State<AppState>) -> AppResult<HotkeyConfig> {
+async fn reset_hotkeys(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResult<HotkeyConfig> {
     let defaults = HotkeyConfig::default();
     {
         let mut locked = state
@@ -2732,18 +2777,18 @@ fn reset_hotkeys(app: AppHandle, state: tauri::State<AppState>) -> AppResult<Hot
             .map_err(|_| "State lock poisoned".to_string())?;
         locked.persist.hotkeys_enabled
     };
-    register_hotkeys(&app, &defaults, enabled)?;
+    register_hotkeys(&app, &defaults, enabled);
     Ok(defaults)
 }
 
 #[tauri::command]
-fn close_app(app: AppHandle) -> AppResult<()> {
+async fn close_app(app: AppHandle) -> AppResult<()> {
     close_app_impl(&app);
     Ok(())
 }
 
 #[tauri::command]
-fn open_external(app: AppHandle, url: String) -> AppResult<()> {
+async fn open_external(app: AppHandle, url: String) -> AppResult<()> {
     app.opener()
         .open_url(url, None::<String>)
         .map_err(|err| format!("Open external url failed: {err}"))
@@ -2873,6 +2918,7 @@ pub fn run() {
                 resize_seq: AtomicU64::new(0),
                 sidebar_visible: AtomicBool::new(true),
                 next_tab_seq: AtomicU64::new(initial_tab_count),
+                hotkey_conflicts: Mutex::new(Vec::new()),
                 log_store: Mutex::new(Vec::new()),
             });
 
@@ -2917,8 +2963,7 @@ pub fn run() {
                         .map_err(|_| std::io::Error::other("State lock poisoned"))?;
                     (locked.hotkeys.clone(), locked.persist.hotkeys_enabled)
                 };
-                register_hotkeys(&app.handle().clone(), &config, enabled)
-                    .map_err(std::io::Error::other)?;
+                register_hotkeys(&app.handle().clone(), &config, enabled);
                 save_history(&state).map_err(std::io::Error::other)?;
                 save_hotkeys_file(&state).map_err(std::io::Error::other)?;
             }

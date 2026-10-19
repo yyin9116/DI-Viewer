@@ -41,7 +41,8 @@ const defaultState: FrontendState = {
     increaseOpacity: '8',
     requestFullScreen: 'O',
     closeWindow: 'Ctrl+Q'
-  }
+  },
+  hotkeyConflicts: []
 };
 const GITHUB_REPO_URL = 'https://github.com/yyin9116/DI-Viewer';
 
@@ -324,7 +325,14 @@ export default function App() {
         hotkeys: next
       }
     }));
-    void run(() => hostBridge.saveHotkeys(next), 'save_hotkeys', 3000);
+    void run(async () => {
+      await hostBridge.saveHotkeys(next);
+      // Re-registering can fail for a combo another app already owns; pull the
+      // fresh conflict list so the panel can mark the row instead of pretending
+      // the shortcut works.
+      await syncSnapshot();
+      return next;
+    }, 'save_hotkeys', 3000);
   };
   const handleResetHotkeys = () => {
     void run(async () => {
@@ -519,6 +527,7 @@ export default function App() {
                 onToggleSidebar={() => void runAndCloseMenu(() => hostBridge.toggleSidebar(), 2500)}
                 onQuit={() => void runAndCloseMenu(() => hostBridge.closeApp(), 2500)}
                 hotkeys={snapshot.state.hotkeys}
+                hotkeyConflicts={snapshot.state.hotkeyConflicts}
                 onSaveHotkeys={handleSaveHotkeys}
                 onResetHotkeys={handleResetHotkeys}
                 lang={uiLang}

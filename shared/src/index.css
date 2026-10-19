@@ -28,18 +28,18 @@
    * var(--color-…), so the override cascades).
    */
   --color-chrome: #ffffff;
-  --color-chrome-strip: #e8ecf1;
-  --color-chrome-line: #d8dee7;
+  --color-chrome-strip: #f1f3f6;
+  --color-chrome-line: #e3e7ee;
   --color-tab-active: #ffffff;
-  --color-tab-active-line: #cbd5e1;
-  --color-tab-idle: #5b6678;
+  --color-tab-active-line: #dfe4ec;
+  --color-tab-idle: #5f6b7d;
 }
 
 .dark {
   --color-chrome: #000000;
-  --color-chrome-strip: #121216;
+  --color-chrome-strip: #101014;
   --color-chrome-line: #2a2a30;
-  --color-tab-active: #27272a;
+  --color-tab-active: #242428;
   --color-tab-active-line: #3f3f46;
   --color-tab-idle: #a1a1aa;
 }

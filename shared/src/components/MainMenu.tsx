@@ -36,6 +36,8 @@ interface MainMenuProps {
   onToggleSidebar: () => void;
   onQuit: () => void;
   hotkeys: HotkeyConfig;
+  /** `name=combo: reason` for bindings the OS refused (already owned by an app). */
+  hotkeyConflicts: string[];
   onSaveHotkeys: (config: HotkeyConfig) => void;
   onResetHotkeys: () => void;
   lang: UILang;
@@ -97,7 +99,9 @@ const TEXT = {
     duplicate: '与上方绑定重复',
     scopeGlobal: '全局',
     scopeInApp: '应用内',
+    scopeConflict: '被占用',
     scopeRequired: '需全局',
+    conflictNote: '标「被占用」的组合已被别的程序抢走，系统会拒绝注册；换一个组合即可，不影响其他快捷键与启动。',
     scopeNote: '「应用内」= 只有本窗口激活时才生效；焦点在输入框、输入法正在拼写、或按着 Ctrl/Alt 时自动跳过，不会被系统抢走。',
     shortcutHint: '裸键（字母、数字、`）只在本应用内生效，不再注册成系统热键，因此不会打断任何程序的打字；需要「窗口隐藏/穿透时也能按」的动作保留 Ctrl+Alt 组合。',
     shortcutSaved: '已保存并重新注册',
@@ -161,7 +165,9 @@ const TEXT = {
     duplicate: 'Duplicate of a binding above',
     scopeGlobal: 'Global',
     scopeInApp: 'In-app',
+    scopeConflict: 'In use',
     scopeRequired: 'Needs mod',
+    conflictNote: 'A combo marked "In use" is already owned by another application, so Windows refuses to register it. Pick another combo — the remaining shortcuts and startup are unaffected.',
     scopeNote: 'In-app = only while this window is active. It is skipped while a text field has focus, while an IME composition is open, or while Ctrl/Alt is held — so nothing is stolen from other apps.',
     shortcutHint: 'Bare keys (letters, digits, `) stay inside the viewer and are never registered system-wide, so they cannot break typing elsewhere. Actions that must work while the window is hidden keep a Ctrl+Alt combo.',
     shortcutSaved: 'Saved and re-registered',
@@ -297,6 +303,7 @@ export function MainMenu({
   onToggleSidebar,
   onQuit,
   hotkeys,
+  hotkeyConflicts,
   onSaveHotkeys,
   onResetHotkeys,
   lang,
@@ -329,8 +336,18 @@ export function MainMenu({
     setRecordError(null);
   }, [hotkeys]);
 
-  const duplicateKeys = useMemo(() => {
-    const seen = new Map<string, number>();
+  /** Bindings the OS refused because another application already owns them.
+   *  Shown per-row so a dead shortcut is never silently dead. */
+  const conflictKeys = useMemo(() => {
+    const set = new Set<string>();
+    hotkeyConflicts.forEach((entry) => {
+      const name = entry.split('=')[0]?.trim();
+      if (name) set.add(name);
+    });
+    return set;
+  }, [hotkeyConflicts]);
+
+  const duplicateKeys = useMemo(() => {    const seen = new Map<string, number>();
     hotkeyKeys.forEach((key) => {
       const value = editingHotkeys[key]?.trim().toUpperCase();
       if (!value) return;
@@ -377,10 +394,10 @@ export function MainMenu({
   };
 
   const tabs: Array<{ id: MenuView; label: string; icon: React.ReactNode }> = [
-    { id: 'appearance', label: t.tabs.appearance, icon: <Sun size={14} /> },
-    { id: 'window', label: t.tabs.window, icon: <Layout size={14} /> },
-    { id: 'shortcuts', label: t.tabs.shortcuts, icon: <Keyboard size={14} /> },
-    { id: 'recovery', label: t.tabs.recovery, icon: <LifeBuoy size={14} /> }
+    { id: 'appearance', label: t.tabs.appearance, icon: <Sun size={13} /> },
+    { id: 'window', label: t.tabs.window, icon: <Layout size={13} /> },
+    { id: 'shortcuts', label: t.tabs.shortcuts, icon: <Keyboard size={13} /> },
+    { id: 'recovery', label: t.tabs.recovery, icon: <LifeBuoy size={13} /> }
   ];
 
   return (
@@ -389,12 +406,12 @@ export function MainMenu({
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.96, y: 16 }}
       transition={{ type: 'spring', damping: 28, stiffness: 320 }}
-      className="pointer-events-auto absolute bottom-6 left-24 z-[2147483647] flex w-[368px] flex-col overflow-hidden rounded-[26px] border border-white/60 bg-white/85 shadow-2xl shadow-black/25 backdrop-blur-3xl dark:border-white/10 dark:bg-zinc-950/85"
+      className="pointer-events-auto absolute bottom-6 left-24 z-[2147483647] flex max-h-[calc(100vh-48px)] w-[360px] flex-col overflow-hidden rounded-[22px] border border-black/[0.06] bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.3)] backdrop-blur-2xl dark:border-white/10 dark:bg-zinc-950/95"
     >
       {/* Header */}
       <div className="flex shrink-0 items-start justify-between px-5 pt-5">
         <div>
-          <h2 className="text-[15px] font-semibold tracking-tight text-slate-900 dark:text-white">{t.settings}</h2>
+          <h2 className="text-[13px] font-semibold tracking-tight text-slate-900 dark:text-white">{t.settings}</h2>
           <p className="mt-0.5 text-[11px] font-medium text-slate-400 dark:text-zinc-500">
             {t.footerVersion} {__APP_VERSION__}
           </p>
@@ -417,10 +434,10 @@ export function MainMenu({
               key={tab.id}
               type="button"
               onClick={() => setView(tab.id)}
-              className={`relative flex flex-1 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-semibold transition-colors ${
+              className={`relative flex flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-lg px-1 py-1.5 text-[11px] transition-colors ${
                 active
-                  ? 'bg-white text-slate-900 shadow-sm dark:bg-zinc-800 dark:text-white'
-                  : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
+                  ? 'bg-white font-semibold text-slate-900 shadow-sm dark:bg-zinc-800 dark:text-white'
+                  : 'font-medium text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
               }`}
             >
               {tab.icon}
@@ -471,7 +488,7 @@ export function MainMenu({
 
               <Card>
                 <div className="px-4 py-3">
-                  <div className="flex items-center gap-2 text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                  <div className="flex items-center gap-2 text-[11px] font-medium text-slate-700 dark:text-slate-200">
                     <Droplet size={15} className="text-brand-500" />
                     <span>{t.opacity}</span>
                     <span className="ml-auto font-mono text-[11px] text-slate-400 dark:text-zinc-500">{opacity}%</span>
@@ -501,7 +518,7 @@ export function MainMenu({
             >
               <Card>
                 <div className="px-4 pt-3.5">
-                  <div className="flex items-center gap-2 text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                  <div className="flex items-center gap-2 text-[11px] font-medium text-slate-700 dark:text-slate-200">
                     <Monitor size={15} className="text-brand-500" />
                     <span>{t.presets}</span>
                   </div>
@@ -592,25 +609,32 @@ export function MainMenu({
                   {hotkeyKeys.map((key, index) => {
                     const isRecording = recordingKey === key;
                     const isDuplicate = duplicateKeys.has(editingHotkeys[key]?.trim().toUpperCase());
+                    const isConflict = conflictKeys.has(key);
                     return (
                       <div
                         key={key}
-                        className={`flex items-center gap-2 px-4 py-2 ${
+                        className={`flex items-center gap-2 px-3 py-[7px] ${
                           index === hotkeyKeys.length - 1 ? '' : 'border-b border-slate-100 dark:border-zinc-800/80'
                         }`}
                       >
-                        <span className="w-[96px] shrink-0">
+                        <span className="w-[88px] shrink-0">
                           <span className="block truncate text-[11px] text-slate-500 dark:text-slate-400">
                             {labels[key]}
                           </span>
                           <span
-                            className={`mt-0.5 block text-[9px] font-medium ${
-                              bindingHasModifier(editingHotkeys[key])
-                                ? 'text-slate-400 dark:text-zinc-500'
-                                : 'text-brand-700 dark:text-brand-300'
+                            className={`mt-px block text-[10px] ${
+                              isConflict
+                                ? 'text-rose-600 dark:text-rose-400'
+                                : bindingHasModifier(editingHotkeys[key])
+                                  ? 'text-slate-400 dark:text-zinc-500'
+                                  : 'text-brand-700 dark:text-brand-300'
                             }`}
                           >
-                            {bindingHasModifier(editingHotkeys[key]) ? t.scopeGlobal : t.scopeInApp}
+                            {isConflict
+                              ? t.scopeConflict
+                              : bindingHasModifier(editingHotkeys[key])
+                                ? t.scopeGlobal
+                                : t.scopeInApp}
                           </span>
                         </span>
                         <input
@@ -623,18 +647,20 @@ export function MainMenu({
                           onBlur={() => setRecordingKey((current) => (current === key ? null : current))}
                           onKeyDown={(event) => handleRecordKeyDown(key, event)}
                           placeholder={isRecording ? t.recording : ''}
-                          className={`min-w-0 flex-1 rounded-lg border px-2 py-1 font-mono text-[11px] outline-none transition-colors ${
+                          className={`min-w-0 flex-1 rounded-md border px-1.5 py-[3px] font-mono text-[11px] tabular-nums outline-none transition-colors ${
                             isRecording
                               ? 'border-brand-400 bg-brand-500/10 text-brand-700 ring-2 ring-brand-500/25 dark:border-brand-500 dark:text-brand-300'
-                              : isDuplicate
-                                ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-600/60 dark:bg-amber-500/10 dark:text-amber-300'
-                                : 'border-transparent bg-black/[0.04] text-slate-600 dark:bg-white/[0.06] dark:text-slate-300'
+                              : isConflict
+                                ? 'border-rose-300 bg-rose-50 text-rose-700 dark:border-rose-600/60 dark:bg-rose-500/10 dark:text-rose-300'
+                                : isDuplicate
+                                  ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-600/60 dark:bg-amber-500/10 dark:text-amber-300'
+                                  : 'border-transparent bg-black/[0.04] text-slate-600 dark:bg-white/[0.06] dark:text-slate-300'
                           }`}
                         />
                         <button
                           type="button"
                           onClick={() => startRecording(key)}
-                          className="shrink-0 rounded-lg border border-slate-200 px-2 py-1 text-[10px] font-medium text-slate-500 transition-colors hover:border-brand-400 hover:text-brand-700 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-brand-500 dark:hover:text-brand-300"
+                          className="shrink-0 rounded-md px-1.5 py-[3px] text-[10px] font-medium text-slate-400 transition-colors hover:bg-black/[0.04] hover:text-brand-700 dark:text-zinc-500 dark:hover:bg-white/[0.06] dark:hover:text-brand-300"
                         >
                           {t.record}
                         </button>
@@ -646,6 +672,11 @@ export function MainMenu({
 
               <p className="px-1 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.shortcutHint}</p>
               <p className="px-1 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">{t.scopeNote}</p>
+              {hotkeyConflicts.length > 0 && (
+                <p className="px-1 text-[11px] leading-4 text-rose-600 dark:text-rose-400">
+                  {t.conflictNote}
+                </p>
+              )}
 
               <div className="flex items-center justify-end gap-2">
                 <button
@@ -688,7 +719,7 @@ export function MainMenu({
                 <button
                   type="button"
                   onClick={onRescueWindow}
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-500 py-2 text-[12px] font-semibold text-white shadow-sm shadow-brand-500/25 transition-colors hover:bg-brand-700"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-500 py-2 text-[11px] font-semibold text-white shadow-sm shadow-brand-500/25 transition-colors hover:bg-brand-700"
                 >
                   <LifeBuoy size={15} />
                   {t.rescuePrimary}
@@ -715,7 +746,7 @@ export function MainMenu({
                 <button
                   type="button"
                   onClick={onAbout}
-                  className="flex w-full items-center gap-2.5 border-b border-slate-100 px-4 py-3 text-left text-[12px] font-medium text-slate-700 transition-colors hover:bg-black/[0.03] dark:border-zinc-800 dark:text-slate-200 dark:hover:bg-white/[0.04]"
+                  className="flex w-full items-center gap-2.5 border-b border-slate-100 px-4 py-3 text-left text-[11px] font-medium text-slate-700 transition-colors hover:bg-black/[0.03] dark:border-zinc-800 dark:text-slate-200 dark:hover:bg-white/[0.04]"
                 >
                   <Info size={15} className="text-slate-400 dark:text-zinc-500" />
                   <span className="flex-1">{t.about}</span>
@@ -724,7 +755,7 @@ export function MainMenu({
                 <button
                   type="button"
                   onClick={onQuit}
-                  className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-[12px] font-medium text-rose-600 transition-colors hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                  className="flex w-full items-center gap-2.5 px-4 py-3 text-left text-[11px] font-medium text-rose-600 transition-colors hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
                 >
                   <LogOut size={15} />
                   <span className="flex-1">{t.quit}</span>
@@ -758,7 +789,7 @@ function Row({ label, children, last }: { label: string; children: React.ReactNo
         last ? '' : 'border-b border-slate-100 dark:border-zinc-800'
       }`}
     >
-      <span className="flex-1 text-[12px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+      <span className="flex-1 text-[11px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
       {children}
     </div>
   );
@@ -789,7 +820,7 @@ function SwitchRow({
     >
       <span className="text-slate-400 dark:text-zinc-500">{icon}</span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[12px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+        <span className="block text-[11px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
         {hint ? (
           <span className="mt-0.5 block truncate text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{hint}</span>
         ) : null}
@@ -827,7 +858,7 @@ function RecoveryRow({
       }`}
     >
       <span className="min-w-0 flex-1">
-        <span className="block text-[12px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+        <span className="block text-[11px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
         {hint ? <span className="mt-0.5 block text-[10px] leading-4 text-slate-400 dark:text-zinc-500">{hint}</span> : null}
       </span>
       {children}

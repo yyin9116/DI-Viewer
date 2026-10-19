@@ -46,7 +46,8 @@ const defaultState: FrontendState = {
   sidebarVisible: true,
   uiLang: 'zh',
   bookmarks: [],
-  hotkeys: defaultHotkeys
+  hotkeys: defaultHotkeys,
+  hotkeyConflicts: []
 };
 
 const defaultTabs: TabSessionSnapshot = {
@@ -99,7 +100,10 @@ function normalizeState(raw: unknown): FrontendState {
     hotkeys: {
       ...defaultHotkeys,
       ...(typeof state.hotkeys === 'object' && state.hotkeys ? (state.hotkeys as Partial<HotkeyConfig>) : {})
-    }
+    },
+    hotkeyConflicts: Array.isArray(state.hotkeyConflicts)
+      ? state.hotkeyConflicts.map((item) => String(item))
+      : []
   };
 }
 

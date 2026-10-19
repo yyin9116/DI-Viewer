@@ -227,7 +227,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
               axis="x"
               values={tabs}
               onReorder={onTabsReorder}
-              className="pointer-events-auto relative z-20 flex shrink-0 items-center gap-1 overflow-x-auto border-b border-chrome-line bg-chrome-strip px-2 py-1.5 scrollbar-hide"
+              className="pointer-events-auto relative z-20 flex shrink-0 items-center gap-[3px] overflow-x-auto border-b border-chrome-line bg-chrome-strip px-1.5 py-1 scrollbar-hide"
             >
               {tabs.map((tTab) => {
                 const favicon = getFaviconUrl(tTab.url);
@@ -243,10 +243,10 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                       // navigation: no spinner, no reload, state is preserved.
                       onTabSelect(tTab.id);
                     }}
-                    className={`group flex min-w-[140px] max-w-[220px] cursor-pointer select-none items-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
+                    className={`group flex h-7 min-w-[112px] max-w-[196px] cursor-pointer select-none items-center gap-1.5 rounded-[7px] px-2 text-[11px] transition-colors ${
                       tTab.id === tab.id
-                        ? 'bg-tab-active text-slate-900 shadow-[0_0_0_1px_var(--color-tab-active-line),0_1px_2px_rgba(15,23,42,0.10)] dark:text-white'
-                        : 'text-tab-idle hover:bg-black/[0.06] dark:hover:bg-white/[0.07]'
+                        ? 'bg-tab-active font-medium text-slate-900 shadow-[0_0_0_1px_var(--color-tab-active-line),0_1px_1px_rgba(15,23,42,0.06)] dark:text-white'
+                        : 'font-normal text-tab-idle hover:bg-black/[0.045] dark:hover:bg-white/[0.06]'
                     }`}
                   >
                     {isLoading ? (
@@ -267,7 +267,9 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                         e.stopPropagation();
                         onTabClose(tTab.id);
                       }}
-                      className="rounded-full p-0.5 opacity-0 transition-all group-hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/10"
+                      className={`rounded-[5px] p-0.5 transition-opacity hover:bg-black/[0.08] dark:hover:bg-white/10 ${
+                        tTab.id === tab.id ? 'opacity-50 hover:opacity-90' : 'opacity-0 group-hover:opacity-60'
+                      }`}
                     >
                       <X size={12} />
                     </button>
