@@ -8,6 +8,21 @@
  * change both sides together.
  */
 @theme {
+  /*
+   * Type. The design system (Ardot 737378809166340 · Sec/RadiusType) specifies
+   * Sarasa Gothic SC for every UI size — 11 / 12 / 13 / 16 / 21, letter-spacing
+   * 0, Regular + Semi Bold — with Georgia reserved for the start page clock.
+   *
+   * Sarasa is not a Windows font, so the chain has to answer two questions at
+   * once: match the design system when it is installed, and never let Latin and
+   * CJK come from two different families. "Inter, Segoe UI, yahei" did exactly
+   * that — Segoe UI drew the Latin, YaHei drew the Chinese, and the two never
+   * lined up on the baseline. Noto Sans SC is built on the same Source Han Sans
+   * skeleton as Sarasa, so it keeps both scripts on one family.
+   */
+  --font-sans: "Sarasa Gothic SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-mono: "Cascadia Mono", "Sarasa Mono SC", "Consolas", ui-monospace, monospace;
+
   /* Brand / interaction (teal) */
   --color-brand-300: #5eead4; /* dark-mode accent text */
   --color-brand-400: #2dd4bf; /* hover */
@@ -46,7 +61,12 @@
 
 :root {
   color-scheme: light;
-  font-family: "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-sans);
+  /* The design system never tracks the UI type; letting Tailwind's
+     `tracking-tight` in made headings look like a different system. */
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 html,
@@ -100,9 +120,18 @@ select {
  * there from the first frame of every navigation instead of appearing ~80ms
  * late. React renders over it; it is transparent to input either way.
  */
+/* Static chrome placeholders, drawn by the injected bootstrap before React
+ * mounts. They only exist to keep the frame from blinking out on navigation;
+ * the real shell paints over them a beat later. */
 #__diviewer_chrome_frame__ {
   background: var(--color-chrome);
   border-bottom: 1px solid var(--color-chrome-line);
+}
+
+#__diviewer_chrome_rail__ {
+  box-sizing: border-box;
+  background: var(--color-chrome);
+  border-right: 1px solid var(--color-chrome-line);
 }
 
 .diviewer-host-root * {

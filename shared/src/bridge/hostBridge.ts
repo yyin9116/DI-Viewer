@@ -413,8 +413,8 @@ export const hostBridge = {
   toggleSidebar() {
     return callBridge('toggle_sidebar');
   },
-  resizeToRatio(ratio: number) {
-    return callBridge('resize_to_ratio', ratio);
+  resizeToRatio(ratio: number, commit = true) {
+    return callBridge('resize_to_ratio', ratio, commit);
   },
   openControlPanel() {
     return callBridge('open_control_panel');

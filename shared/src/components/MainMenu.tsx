@@ -41,7 +41,7 @@ interface MainMenuProps {
   onResetHotkeys: () => void;
   lang: UILang;
   onLangChange: (lang: UILang) => void;
-  onResizeRatio: (ratio: number) => void;
+  onResizeRatio: (ratio: number, commit: boolean) => void;
   onToggleInsideMode: () => void;
   isInsideMode: boolean;
   onTogglePositionLock: () => void;
@@ -269,14 +269,14 @@ const GLOBAL_REQUIRED: Array<keyof HotkeyConfig> = ['toggleShowHide', 'insideMod
 function ComboKeys({ combo }: { combo: string }) {
   const parts = combo.split('+').filter(Boolean);
   if (!parts.length) {
-    return <span className="text-[11px] text-slate-400 dark:text-zinc-500">—</span>;
+    return <span className="text-[12px] text-[#5B6470] dark:text-zinc-400">—</span>;
   }
   return (
     <span className="flex items-center gap-1">
       {parts.map((part, index) => (
         <kbd
           key={`${part}-${index}`}
-          className="rounded-md border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[11px] font-medium text-slate-600 shadow-[0_1px_0_rgba(15,23,42,0.06)] dark:border-zinc-700 dark:bg-zinc-900 dark:text-slate-200 dark:shadow-none"
+          className="rounded-md border border-[#D6DEEA] bg-white px-1.5 py-0.5 font-mono text-[11px] font-medium text-slate-600 shadow-[0_1px_0_rgba(15,23,42,0.06)] dark:border-zinc-700 dark:bg-zinc-900 dark:text-slate-200 dark:shadow-none"
         >
           {part}
         </kbd>
@@ -406,15 +406,15 @@ export function MainMenu({
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.97, y: 12 }}
       transition={{ type: 'spring', damping: 30, stiffness: 340 }}
-      className="pointer-events-auto absolute bottom-6 left-24 z-[2147483647] flex max-h-[calc(100vh-40px)] w-[368px] flex-col overflow-hidden rounded-[26px] border border-slate-200 bg-white/97 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.28)] backdrop-blur-2xl dark:border-[#272727] dark:bg-black/95"
+      className="pointer-events-auto absolute bottom-6 left-24 z-[2147483647] flex max-h-[calc(100vh-40px)] w-[368px] flex-col overflow-hidden rounded-[26px] border border-[#D6DEEA] bg-[#F3F6FB] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.28)] backdrop-blur-2xl dark:border-[#272727] dark:bg-[#0B0B0D]"
     >
       {/* Header */}
       <div className="flex shrink-0 items-start justify-between px-4 pt-4">
         <div>
-          <h2 className="text-[15px] font-bold leading-5 tracking-tight text-slate-900 dark:text-white">
+          <h2 className="text-[21px] font-semibold leading-[28px] text-[#1F2937] dark:text-white">
             {t.settings}
           </h2>
-          <p className="mt-0.5 text-[11px] leading-4 text-slate-400 dark:text-zinc-500">
+          <p className="mt-0.5 text-[11px] leading-4 text-[#5B6470] dark:text-zinc-400">
             {t.footerVersion} {__APP_VERSION__}
           </p>
         </div>
@@ -436,10 +436,10 @@ export function MainMenu({
               key={tab.id}
               type="button"
               onClick={() => setView(tab.id)}
-              className={`flex h-7 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-lg text-[11px] leading-none transition-colors ${
+              className={`flex h-7 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-lg text-[12px] leading-none transition-colors ${
                 active
                   ? 'bg-white font-semibold text-slate-900 dark:bg-zinc-800 dark:text-white'
-                  : 'font-normal text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
+                  : 'font-normal text-[#5B6470] hover:text-[#1F2937] dark:text-zinc-400 dark:hover:text-white'
               }`}
             >
               {tab.icon}
@@ -491,10 +491,10 @@ export function MainMenu({
               <Card>
                 <div className="px-3.5 pb-3.5 pt-3">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                    <span className="text-[13px] text-[#1F2937] dark:text-zinc-100">
                       {t.opacity}
                     </span>
-                    <span className="ml-auto font-mono text-[11px] tabular-nums text-slate-400 dark:text-zinc-500">
+                    <span className="ml-auto font-mono text-[12px] tabular-nums text-[#5B6470] dark:text-zinc-400">
                       {opacity}%
                     </span>
                   </div>
@@ -504,9 +504,9 @@ export function MainMenu({
                     max="100"
                     value={opacity}
                     onChange={(e) => setOpacity(parseInt(e.target.value, 10))}
-                    className="mt-2.5 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-500 dark:bg-zinc-700"
+                    className="mt-2.5 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-700 dark:accent-brand-400 dark:bg-zinc-700"
                   />
-                  <p className="mt-2 text-[11px] leading-[1.5] text-slate-400 dark:text-zinc-500">
+                  <p className="mt-2 text-[12px] leading-[1.5] text-[#5B6470] dark:text-zinc-400">
                     {t.opacityHint}
                   </p>
                 </div>
@@ -526,10 +526,10 @@ export function MainMenu({
               <Card>
                 <div className="px-3.5 pb-3 pt-3">
                   <div className="flex items-baseline gap-2">
-                    <span className="text-[12px] font-medium text-slate-700 dark:text-slate-200">
+                    <span className="text-[13px] text-[#1F2937] dark:text-zinc-100">
                       {t.presets}
                     </span>
-                    <span className="ml-auto font-mono text-[11px] tabular-nums text-slate-400 dark:text-zinc-500">
+                    <span className="ml-auto font-mono text-[12px] tabular-nums text-[#5B6470] dark:text-zinc-400">
                       {Math.round(viewport.width)} × {Math.round(viewport.height)}
                     </span>
                   </div>
@@ -592,8 +592,8 @@ export function MainMenu({
               </Card>
 
               <Card>
-                <div className="flex items-center justify-between border-b border-slate-200/80 px-3.5 py-2 dark:border-zinc-800">
-                  <span className="text-[11px] font-semibold text-slate-400 dark:text-zinc-500">
+                <div className="flex items-center justify-between border-b border-[#D6DEEA] px-3.5 py-2 dark:border-zinc-800">
+                  <span className="text-[13px] font-semibold text-[#5B6470] dark:text-zinc-400">
                     {t.shortcutTable}
                   </span>
                   {recordError ? (
@@ -602,7 +602,7 @@ export function MainMenu({
                       {recordError}
                     </span>
                   ) : (
-                    <span className="text-[11px] text-slate-400 dark:text-zinc-500">{t.cancel}</span>
+                    <span className="text-[12px] text-[#5B6470] dark:text-zinc-400">{t.cancel}</span>
                   )}
                 </div>
                 <div className={hotkeysEnabled ? '' : 'pointer-events-none opacity-45'}>
@@ -618,15 +618,15 @@ export function MainMenu({
                         }`}
                       >
                         <span className="w-[92px] shrink-0">
-                          <span className="block truncate text-[12px] font-medium leading-4 text-slate-700 dark:text-slate-200">
+                          <span className="block truncate text-[13px] leading-4 text-[#1F2937] dark:text-zinc-100">
                             {labels[key]}
                           </span>
                           <span
-                            className={`mt-px block text-[11px] leading-4 ${
+                            className={`mt-px block text-[12px] leading-4 ${
                               isConflict
                                 ? 'text-rose-600 dark:text-rose-400'
                                 : bindingHasModifier(editingHotkeys[key])
-                                  ? 'text-slate-400 dark:text-zinc-500'
+                                  ? 'text-[#5B6470] dark:text-zinc-400'
                                   : 'text-brand-700 dark:text-brand-300'
                             }`}
                           >
@@ -647,7 +647,7 @@ export function MainMenu({
                           onBlur={() => setRecordingKey((current) => (current === key ? null : current))}
                           onKeyDown={(event) => handleRecordKeyDown(key, event)}
                           placeholder={isRecording ? t.recording : ''}
-                          className={`min-w-0 flex-1 rounded-md border px-1.5 py-1 font-mono text-[11px] tabular-nums outline-none transition-colors ${
+                          className={`min-w-0 flex-1 rounded-md border px-1.5 py-1 font-mono text-[12px] tabular-nums outline-none transition-colors ${
                             isRecording
                               ? 'border-brand-400 bg-brand-500/10 text-brand-700 ring-2 ring-brand-500/20 dark:border-brand-500 dark:text-brand-300'
                               : isConflict
@@ -660,7 +660,7 @@ export function MainMenu({
                         <button
                           type="button"
                           onClick={() => startRecording(key)}
-                          className="shrink-0 rounded-md px-1.5 py-1 text-[11px] font-medium text-slate-400 transition-colors hover:bg-black/[0.04] hover:text-brand-700 dark:text-zinc-500 dark:hover:bg-white/[0.06] dark:hover:text-brand-300"
+                          className="shrink-0 rounded-md px-1.5 py-1 text-[12px] font-medium text-[#5B6470] transition-colors hover:bg-black/[0.04] hover:text-brand-700 dark:text-zinc-500 dark:hover:bg-white/[0.06] dark:hover:text-brand-300"
                         >
                           {t.record}
                         </button>
@@ -670,10 +670,10 @@ export function MainMenu({
                 </div>
               </Card>
 
-              <p className="px-1 text-[11px] leading-[1.6] text-slate-400 dark:text-zinc-500">{t.shortcutHint}</p>
-              <p className="px-1 text-[11px] leading-[1.6] text-slate-400 dark:text-zinc-500">{t.scopeNote}</p>
+              <p className="px-1 text-[12px] leading-[1.6] text-[#5B6470] dark:text-zinc-400">{t.shortcutHint}</p>
+              <p className="px-1 text-[12px] leading-[1.6] text-[#5B6470] dark:text-zinc-400">{t.scopeNote}</p>
               {hotkeyConflicts.length > 0 && (
-                <p className="px-1 text-[11px] leading-[1.6] text-rose-600 dark:text-rose-400">
+                <p className="px-1 text-[12px] leading-[1.6] text-rose-600 dark:text-rose-400">
                   {t.conflictNote}
                 </p>
               )}
@@ -685,7 +685,7 @@ export function MainMenu({
                     onResetHotkeys();
                     setRecordError(null);
                   }}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[11px] font-medium text-slate-600 transition-colors hover:bg-slate-50 dark:border-zinc-700 dark:text-slate-300 dark:hover:bg-zinc-900"
+                  className="inline-flex items-center gap-1 rounded-lg border border-[#D6DEEA] px-2.5 py-1.5 text-[12px] font-medium text-[#1F2937] transition-colors hover:bg-slate-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900"
                 >
                   <RotateCcw size={12} /> {t.reset}
                 </button>
@@ -697,7 +697,7 @@ export function MainMenu({
                     setSavedFlash(true);
                     window.setTimeout(() => setSavedFlash(false), 1600);
                   }}
-                  className="inline-flex items-center gap-1 rounded-lg bg-brand-500 px-2.5 py-1.5 text-[11px] font-semibold text-white transition-colors hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-brand-500/40"
+                  className="inline-flex items-center gap-1 rounded-lg bg-brand-500 px-2.5 py-1.5 text-[13px] font-semibold text-white transition-colors hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-brand-500/40"
                 >
                   {savedFlash ? <Check size={12} /> : <Save size={12} />}
                   {savedFlash ? t.shortcutSaved : t.save}
@@ -724,13 +724,13 @@ export function MainMenu({
                   <LifeBuoy size={15} />
                   {t.rescuePrimary}
                 </button>
-                <p className="mt-2 text-[11px] leading-[1.5] text-slate-500 dark:text-slate-400">
+                <p className="mt-2 text-[12px] leading-[1.5] text-[#5B6470] dark:text-zinc-400">
                   {t.rescueHint}
                 </p>
               </div>
 
               <Card>
-                <div className="px-3.5 pb-0.5 pt-3 text-[11px] font-semibold text-slate-400 dark:text-zinc-500">
+                <div className="px-3.5 pb-0.5 pt-3 text-[13px] font-semibold text-[#5B6470] dark:text-zinc-400">
                   {t.rescueSteps}
                 </div>
                 <RecoveryRow label={t.rescueHotkey} hint={t.rescueAlways}>
@@ -748,16 +748,16 @@ export function MainMenu({
                 <button
                   type="button"
                   onClick={onAbout}
-                  className="flex w-full items-center gap-2.5 border-b border-slate-200/80 px-3.5 py-3 text-left text-[12px] font-medium text-slate-700 transition-colors hover:bg-black/[0.03] dark:border-zinc-800 dark:text-slate-200 dark:hover:bg-white/[0.04]"
+                  className="flex w-full items-center gap-2.5 border-b border-[#D6DEEA] px-3.5 py-3 text-left text-[13px] text-[#1F2937] transition-colors hover:bg-black/[0.03] dark:border-zinc-800 dark:text-zinc-100 dark:hover:bg-white/[0.04]"
                 >
-                  <Info size={15} className="text-slate-400 dark:text-zinc-500" />
+                  <Info size={15} className="text-[#5B6470] dark:text-zinc-400" />
                   <span className="flex-1">{t.about}</span>
                   <ChevronRight size={14} className="text-slate-300 dark:text-zinc-600" />
                 </button>
                 <button
                   type="button"
                   onClick={onQuit}
-                  className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left text-[12px] font-medium text-rose-600 transition-colors hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
+                  className="flex w-full items-center gap-2.5 px-3.5 py-3 text-left text-[13px] text-rose-600 transition-colors hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-500/10"
                 >
                   <LogOut size={15} />
                   <span className="flex-1">{t.quit}</span>
@@ -788,33 +788,73 @@ function RatioBar({
 }: {
   lang: UILang;
   viewportWidth: number;
-  onResize: (ratio: number) => void;
+  /** `commit: false` is a live preview while dragging; `true` lands on disk. */
+  onResize: (ratio: number, commit: boolean) => void;
 }) {
   const t = TEXT[lang];
   const monitors = typeof window !== 'undefined' && window.screen?.availWidth ? window.screen.availWidth : 1920;
   const actual = Math.max(20, Math.min(100, Math.round((viewportWidth / monitors) * 100)));
   const [value, setValue] = useState(actual);
-  const dragging = useRef(false);
-  const timer = useRef<number | undefined>(undefined);
+  const live = useRef(false);
+  const frame = useRef<number | undefined>(undefined);
+  const pending = useRef<number | null>(null);
+  const lastCommit = useRef<number | null>(null);
+  const resizeRef = useRef(onResize);
+  resizeRef.current = onResize;
 
   useEffect(() => {
-    if (!dragging.current) setValue(actual);
+    if (!live.current) setValue(actual);
   }, [actual]);
 
   useEffect(() => () => {
-    if (timer.current) window.clearTimeout(timer.current);
+    if (frame.current) window.cancelAnimationFrame(frame.current);
+    // The panel can be dismissed mid-drag; land the last preview instead of
+    // leaving the backend in "dragging" mode (it suppresses snapping and
+    // geometry persistence until a commit arrives).
+    if (live.current && pending.current != null) {
+      resizeRef.current(pending.current / 100, true);
+    }
   }, []);
 
-  const commit = (next: number) => {
-    const clamped = Math.max(20, Math.min(100, Math.round(next)));
+  const clamp = (next: number) => Math.max(20, Math.min(100, Math.round(next)));
+
+  /*
+   * One resize per animation frame while the thumb is moving. The backend
+   * treats these as previews — no history write, no edge snapping — so the
+   * window tracks the thumb continuously instead of stepping every 160ms.
+   */
+  const preview = (next: number) => {
+    const clamped = clamp(next);
+    live.current = true;
     setValue(clamped);
-    dragging.current = true;
-    if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => {
-      dragging.current = false;
-      onResize(clamped / 100);
-    }, 160);
+    pending.current = clamped;
+    if (frame.current == null) {
+      frame.current = window.requestAnimationFrame(() => {
+        frame.current = undefined;
+        const queued = pending.current;
+        pending.current = null;
+        if (queued != null) onResize(queued / 100, false);
+      });
+    }
   };
+
+  const commit = (next: number) => {
+    const clamped = clamp(next);
+    const wasLive = live.current;
+    live.current = false;
+    setValue(clamped);
+    if (frame.current != null) {
+      window.cancelAnimationFrame(frame.current);
+      frame.current = undefined;
+    }
+    pending.current = null;
+    if (!wasLive && lastCommit.current === clamped) return;
+    lastCommit.current = clamped;
+    onResize(clamped / 100, true);
+  };
+
+  const readValue = (target: EventTarget | null) =>
+    parseInt((target as HTMLInputElement | null)?.value ?? String(value), 10);
 
   return (
     <>
@@ -824,8 +864,11 @@ function RatioBar({
         max="100"
         step="1"
         value={value}
-        onChange={(e) => commit(parseInt(e.target.value, 10))}
-        className="mt-2.5 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-500 dark:bg-zinc-700"
+        onChange={(e) => preview(parseInt(e.target.value, 10))}
+        onPointerUp={(e) => commit(readValue(e.target))}
+        onKeyUp={(e) => commit(readValue(e.target))}
+        onBlur={(e) => commit(readValue(e.target))}
+        className="mt-2.5 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-700 dark:accent-brand-400 dark:bg-zinc-700"
         aria-label={t.presets}
       />
       <div className="mt-2 flex items-center justify-between">
@@ -840,7 +883,7 @@ function RatioBar({
               className={`rounded px-1 py-0.5 font-mono text-[11px] tabular-nums transition-colors ${
                 active
                   ? 'font-semibold text-brand-700 dark:text-brand-300'
-                  : 'text-slate-400 hover:text-brand-700 dark:text-zinc-500 dark:hover:text-brand-300'
+                  : 'text-[#5B6470] hover:text-brand-700 dark:text-zinc-400 dark:hover:text-brand-300'
               }`}
             >
               {t[tick.label]}
@@ -854,7 +897,7 @@ function RatioBar({
 
 function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-[14px] border border-slate-200 bg-white dark:border-[#272727] dark:bg-zinc-950">
+    <div className="overflow-hidden rounded-[14px] border border-[#D6DEEA] bg-white dark:border-[#272727] dark:bg-[#17171B]">
       {children}
     </div>
   );
@@ -864,10 +907,10 @@ function Row({ label, children, last }: { label: string; children: React.ReactNo
   return (
     <div
       className={`flex h-11 items-center gap-3 px-3.5 ${
-        last ? '' : 'border-b border-slate-200/80 dark:border-zinc-800'
+        last ? '' : 'border-b border-[#D6DEEA] dark:border-zinc-800'
       }`}
     >
-      <span className="flex-1 text-[12px] font-medium text-slate-700 dark:text-slate-200">{label}</span>
+      <span className="flex-1 text-[13px] text-[#1F2937] dark:text-zinc-100">{label}</span>
       {children}
     </div>
   );
@@ -893,19 +936,19 @@ function SwitchRow({
       type="button"
       onClick={() => onChange(!checked)}
       className={`flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${
-        last ? '' : 'border-b border-slate-200/80 dark:border-zinc-800'
+        last ? '' : 'border-b border-[#D6DEEA] dark:border-zinc-800'
       }`}
     >
-      <span className="text-slate-400 dark:text-zinc-500">{icon}</span>
+      <span className="text-[#5B6470] dark:text-zinc-400">{icon}</span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[12px] font-medium leading-4 text-slate-700 dark:text-slate-200">{label}</span>
+        <span className="block text-[13px] leading-4 text-[#1F2937] dark:text-zinc-100">{label}</span>
         {hint ? (
-          <span className="mt-0.5 block truncate text-[11px] leading-[1.5] text-slate-400 dark:text-zinc-500">{hint}</span>
+          <span className="mt-0.5 block truncate text-[12px] leading-[1.5] text-[#5B6470] dark:text-zinc-400">{hint}</span>
         ) : null}
       </span>
       <span
         className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
-          checked ? 'bg-brand-500' : 'bg-slate-200 dark:bg-zinc-700'
+          checked ? 'bg-brand-700 dark:bg-brand-400' : 'bg-[#D6DEEA] dark:bg-zinc-700'
         }`}
       >
         <span
@@ -932,12 +975,12 @@ function RecoveryRow({
   return (
     <div
       className={`flex items-center gap-3 px-3.5 py-2.5 ${
-        last ? '' : 'border-b border-slate-200/80 dark:border-zinc-800'
+        last ? '' : 'border-b border-[#D6DEEA] dark:border-zinc-800'
       }`}
     >
       <span className="min-w-0 flex-1">
-        <span className="block text-[12px] font-medium leading-4 text-slate-700 dark:text-slate-200">{label}</span>
-        {hint ? <span className="mt-0.5 block text-[11px] leading-[1.5] text-slate-400 dark:text-zinc-500">{hint}</span> : null}
+        <span className="block text-[13px] leading-4 text-[#1F2937] dark:text-zinc-100">{label}</span>
+        {hint ? <span className="mt-0.5 block text-[12px] leading-[1.5] text-[#5B6470] dark:text-zinc-400">{hint}</span> : null}
       </span>
       {children}
     </div>
@@ -965,7 +1008,7 @@ function Segmented<T extends string>({
             className={`flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] font-medium leading-4 transition-colors ${
               active
                 ? 'bg-white text-slate-900 shadow-sm dark:bg-zinc-700 dark:text-white'
-                : 'text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-white'
+                : 'text-[#5B6470] hover:text-[#1F2937] dark:text-zinc-400 dark:hover:text-white'
             }`}
           >
             {option.icon}

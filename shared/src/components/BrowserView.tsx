@@ -162,7 +162,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                                   onNavigateHistory(i);
                                   setIsHistoryOpen(false);
                                 }}
-                                className={`w-full truncate px-4 py-2 text-left text-sm transition-colors hover:bg-black/5 dark:hover:bg-white/10 ${i === tab.historyIndex ? 'font-semibold text-teal-500' : 'text-slate-700 dark:text-slate-300'}`}
+                                className={`w-full truncate px-4 py-2 text-left text-[13px] transition-colors hover:bg-black/5 dark:hover:bg-white/10 ${i === tab.historyIndex ? 'font-semibold text-teal-500' : 'text-slate-700 dark:text-slate-300'}`}
                               >
                                 {hUrl}
                               </button>
@@ -204,7 +204,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                   value={inputUrl}
                   onChange={(e) => setInputUrl(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  className="flex-1 border-none bg-transparent font-mono text-sm text-slate-500 outline-none placeholder-slate-400 dark:text-slate-300"
+                  className="flex-1 border-none bg-transparent font-mono text-[13px] text-slate-500 outline-none placeholder-slate-400 dark:text-slate-300"
                   placeholder={t.placeholder}
                 />
               </div>
@@ -244,7 +244,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                       // navigation: no spinner, no reload, state is preserved.
                       onTabSelect(tTab.id);
                     }}
-                    className={`group flex h-7 cursor-pointer select-none items-center gap-1.5 rounded-[7px] text-[11px] transition-colors ${
+                    className={`group flex h-7 cursor-pointer select-none items-center gap-1.5 rounded-[7px] text-[12px] transition-colors ${
                       compact ? 'min-w-[96px] max-w-[148px] px-1.5' : 'min-w-[112px] max-w-[196px] px-2'
                     } ${
                       tTab.id === tab.id

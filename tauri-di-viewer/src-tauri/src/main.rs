@@ -52,7 +52,11 @@ const RESCUE_SHORTCUT: &str = "Ctrl+Alt+Shift+R";
 /// pops "msedgewebview2 has stopped working" on every launch.
 /// NOTE: additional_browser_args REPLACES wry's defaults, so the default
 /// disabled-features list must be restated here.
-const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-sandbox --no-sandbox";
+///
+/// The three backgrounding switches matter for tab switching: every tab is its
+/// own hidden window, and WebView2 throttles renderers it believes are
+/// occluded, so the first frame after `show()` is a catch-up repaint.
+const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-sandbox --no-sandbox --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
 
 /// Same arguments, optionally plus a DevTools port. Shipping builds leave
 /// `DIVIEWER_DEBUG_PORT` unset, so no port is ever opened by default; a
@@ -225,6 +229,9 @@ struct AppState {
     snapping: AtomicBool,
     move_seq: AtomicU64,
     resize_seq: AtomicU64,
+    /// True while the width bar is being dragged. Suppresses edge snapping and
+    /// per-tick disk writes; the gesture commits once on release.
+    ratio_drag: AtomicBool,
     sidebar_visible: AtomicBool,
     /// Monotonic counter used to mint stable, unique window labels for tabs.
     /// Labels are never derived from the tab index (indexes shift on close),
@@ -611,6 +618,36 @@ fn browser_labels(app: &AppHandle) -> Vec<String> {
 /// Tabs are created lazily and then kept alive (hidden) so switching back is a
 /// show/hide, never a reload: scroll position, form state and video playback
 /// all survive.
+/// Geometry of the tab window the user can actually see right now.
+///
+/// The active index is useless for this: `switch_tab`/`new_tab` point it at the
+/// tab they are about to create, so asking "which window is active" always
+/// answers with the window that does not exist yet. Reading the visible one
+/// keeps creation and the on-screen rect in sync from the first frame.
+fn visible_browser_rect(
+    app: &AppHandle,
+) -> Option<(PhysicalPosition<i32>, PhysicalSize<u32>, f64, bool)> {
+    for label in browser_labels(app) {
+        let Some(window) = app.get_webview_window(&label) else {
+            continue;
+        };
+        if !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
+            continue;
+        }
+        let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+            continue;
+        };
+        let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+        return Some((
+            position,
+            size,
+            scale,
+            window.is_maximized().unwrap_or(false),
+        ));
+    }
+    None
+}
+
 fn ensure_browser_window(app: &AppHandle, label: &str) -> AppResult<WebviewWindow> {
     if let Some(window) = app.get_webview_window(label) {
         return Ok(window);
@@ -629,31 +666,75 @@ fn ensure_browser_window(app: &AppHandle, label: &str) -> AppResult<WebviewWindo
             .unwrap_or_else(|| locked.persist.last_url.clone());
         (locked.persist.clone(), url)
     };
-    // Inherit the geometry the user is currently looking at. Creating the tab
-    // at the persisted size and then resizing it on screen is what made a new
+    // Create the window at the rect the user is currently looking at. Building
+    // it at the persisted size and resizing it afterwards is what made a new
     // tab look like "the app scaling up" for a frame.
     let mut initial = initial;
-    if let Ok(active) = active_browser_label(app) {
-        if active != label {
-            if let Some(current) = app.get_webview_window(&active) {
-                if !current.is_maximized().unwrap_or(false) {
-                    if let (Ok(position), Ok(size)) = (current.outer_position(), current.inner_size()) {
-                        let scale = current.scale_factor().unwrap_or(1.0).max(0.01);
-                        initial.window_start_x = position.x as f64 / scale;
-                        initial.window_start_y = position.y as f64 / scale;
-                        initial.window_width = size.width as f64 / scale;
-                        initial.window_height = size.height as f64 / scale;
-                        initial.window_maximized = false;
-                    }
-                } else {
-                    initial.window_maximized = true;
-                }
-            }
+    if let Some((position, size, scale, maximized)) = visible_browser_rect(app) {
+        if maximized {
+            initial.window_maximized = true;
+        } else {
+            initial.window_start_x = position.x as f64 / scale;
+            initial.window_start_y = position.y as f64 / scale;
+            initial.window_width = size.width as f64 / scale;
+            initial.window_height = size.height as f64 / scale;
+            initial.window_maximized = false;
         }
     }
     let window = create_browser_tab_window(app, label, &initial, &url, false)?;
     push_log(app, "native", "create_tab_window", label.to_string());
     Ok(window)
+}
+
+/// Restored tabs have no window until they are first visited, so the first
+/// click on one used to build a webview from nothing: fresh document, fresh
+/// React boot, ~300ms of naked page. That is the "switching tabs reloads the
+/// app" the user sees. Materialise them hidden, in the background, so a switch
+/// is only ever show/hide.
+const PREWARM_MAX_TABS: usize = 6;
+const PREWARM_GAP_MS: u64 = 260;
+
+fn prewarm_restored_tabs(app: &AppHandle) {
+    let labels: Vec<String> = {
+        let state = app.state::<AppState>();
+        let Ok(locked) = state.data.lock() else {
+            return;
+        };
+        let active = locked.active_tab;
+        locked
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| *idx != active)
+            .map(|(_, tab)| tab.label.clone())
+            .take(PREWARM_MAX_TABS)
+            .collect()
+    };
+    if labels.is_empty() {
+        return;
+    }
+    let app = app.clone();
+    thread::spawn(move || {
+        // Let the first window finish its own paint before borrowing the main
+        // thread for more webviews.
+        thread::sleep(Duration::from_millis(900));
+        for label in labels {
+            let app_for_main = app.clone();
+            let label_for_main = label.clone();
+            let _ = app.run_on_main_thread(move || {
+                match ensure_browser_window(&app_for_main, &label_for_main) {
+                    Ok(_) => push_log(&app_for_main, "native", "prewarm_tab", label_for_main),
+                    Err(err) => push_log(
+                        &app_for_main,
+                        "native",
+                        "prewarm_tab",
+                        format!("failed:{label_for_main}:{err}"),
+                    ),
+                }
+            });
+            thread::sleep(Duration::from_millis(PREWARM_GAP_MS));
+        }
+    });
 }
 
 fn browser_window(app: &AppHandle) -> AppResult<WebviewWindow> {
@@ -903,7 +984,7 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     get_ui_language: () => call('get_ui_language'),
     set_ui_language: (lang) => call('set_ui_language', { lang: String(lang || 'zh') }),
     set_dock_color: (color) => call('set_dock_color', { color: String(color || 'white') }),
-    resize_to_ratio: (ratio) => call('resize_to_ratio', { ratio: Number(ratio || 0.5) }),
+    resize_to_ratio: (ratio, commit) => call('resize_to_ratio', { ratio: Number(ratio || 0.5), commit: commit !== false }),
     open_control_panel: () => call('open_control_panel'),
     close_app: () => call('close_app')
   };
@@ -958,12 +1039,20 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
       shadow.appendChild(mount);
     }
 
-    // Static strip painted before React boots. Without it the chrome vanished
-    // for the first frames of every navigation ("嵌入态消失一下又回来").
+    // Static chrome painted before React boots: the left rail first, then the
+    // top strip on top of it (so the strip's bottom border stays continuous
+    // across the corner). Without them the shell vanished for the first frames
+    // of every navigation, and the page underneath read as a bare reload.
+    if (!shadow.getElementById('__diviewer_chrome_rail__')) {
+      const rail = document.createElement('div');
+      rail.id = '__diviewer_chrome_rail__';
+      rail.style.cssText = 'position:fixed;left:0;top:0;bottom:0;width:var(--diviewer-inset-left,' + __SIDEBAR_W__ + 'px);pointer-events:none;';
+      shadow.insertBefore(rail, shadow.firstChild);
+    }
     if (!shadow.getElementById('__diviewer_chrome_frame__')) {
       const frame = document.createElement('div');
       frame.id = '__diviewer_chrome_frame__';
-      frame.style.cssText = 'position:fixed;left:0;top:0;right:0;height:' + __CHROME_H__ + 'px;pointer-events:none;';
+      frame.style.cssText = 'position:fixed;left:0;top:0;right:0;height:var(--diviewer-inset-top,' + __CHROME_H__ + 'px);pointer-events:none;';
       shadow.insertBefore(frame, shadow.firstChild);
     }
 
@@ -1425,9 +1514,16 @@ fn toggle_position_lock_impl(app: &AppHandle) -> AppResult<bool> {
     Ok(next)
 }
 
-fn resize_to_ratio_impl(app: &AppHandle, ratio: f64) -> AppResult<f64> {
+fn resize_to_ratio_impl(app: &AppHandle, ratio: f64, commit: bool) -> AppResult<f64> {
     let browser = browser_window(app)?;
     let ratio = ratio.clamp(0.2, 1.0);
+    let state = app.state::<AppState>();
+    // The width bar drives this on every animation frame while it is being
+    // dragged. Flag the gesture so the move handler does not snap the window
+    // away mid-drag and so nothing writes history.json 60 times a second; the
+    // release frame (`commit`) is what lands on disk.
+    state.ratio_drag.store(!commit, Ordering::SeqCst);
+
     let monitor = browser
         .current_monitor()
         .map_err(|err| format!("Read monitor failed: {err}"))?
@@ -1442,23 +1538,43 @@ fn resize_to_ratio_impl(app: &AppHandle, ratio: f64) -> AppResult<f64> {
         .round()
         .clamp(320.0, monitor_size.height as f64) as u32;
 
-    browser
-        .set_size(Size::Physical(PhysicalSize::new(width, height)))
-        .map_err(|err| format!("Set size failed: {err}"))?;
+    let same_size = browser
+        .inner_size()
+        .map(|s| s.width == width && s.height == height)
+        .unwrap_or(false);
+    if !same_size {
+        browser
+            .set_size(Size::Physical(PhysicalSize::new(width, height)))
+            .map_err(|err| format!("Set size failed: {err}"))?;
+    }
 
     let x = monitor_pos.x + ((monitor_size.width as i32 - width as i32) / 2);
     let y = monitor_pos.y + ((monitor_size.height as i32 - height as i32) / 2);
-    browser
-        .set_position(Position::Physical(PhysicalPosition::new(x, y)))
-        .map_err(|err| format!("Set position failed: {err}"))?;
+    let same_position = browser
+        .outer_position()
+        .map(|p| p.x == x && p.y == y)
+        .unwrap_or(false);
+    if !same_position {
+        browser
+            .set_position(Position::Physical(PhysicalPosition::new(x, y)))
+            .map_err(|err| format!("Set position failed: {err}"))?;
+    }
 
-    let state = app.state::<AppState>();
     let scale = browser.scale_factor().unwrap_or(1.0).max(0.01);
-    let current_url = browser
-        .url()
-        .map(|u| u.to_string())
-        .unwrap_or_else(|_| state.home_url.clone());
-    update_persist(&state, |persist| {
+    let current_url = if commit {
+        browser
+            .url()
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| state.home_url.clone())
+    } else {
+        String::new()
+    };
+    {
+        let mut locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        let persist = &mut locked.persist;
         persist.window_start_x = x as f64 / scale;
         persist.window_start_y = y as f64 / scale;
         persist.window_width = (width as f64 / scale).round();
@@ -1466,7 +1582,10 @@ fn resize_to_ratio_impl(app: &AppHandle, ratio: f64) -> AppResult<f64> {
         if !current_url.trim().is_empty() {
             persist.last_url = current_url.clone();
         }
-    })?;
+    }
+    if commit {
+        save_history(&state)?;
+    }
 
     Ok(ratio)
 }
@@ -2125,6 +2244,11 @@ fn create_browser_tab_window(
             }
 
             let state = app_handle.state::<AppState>();
+            // A width-bar drag moves the window every frame; snapping to an
+            // edge mid-gesture would fight the user's hand.
+            if state.ratio_drag.load(Ordering::SeqCst) {
+                return;
+            }
             let seq = state.move_seq.fetch_add(1, Ordering::SeqCst) + 1;
             let app_for_snap = app_handle.clone();
             let label_for_snap = label_for_event.clone();
@@ -2141,6 +2265,9 @@ fn create_browser_tab_window(
             // Resized fires continuously while dragging edges; debounce the
             // disk write instead of persisting on every tick.
             let state = app_handle.state::<AppState>();
+            if state.ratio_drag.load(Ordering::SeqCst) {
+                return;
+            }
             let seq = state.resize_seq.fetch_add(1, Ordering::SeqCst) + 1;
             let app_for_resize = app_handle.clone();
             let label_for_resize = label_for_event.clone();
@@ -2446,9 +2573,11 @@ async fn toggle_lock_position(app: AppHandle) -> AppResult<bool> {
     toggle_position_lock_impl(&app)
 }
 
+/// `commit: false` = live preview while the width bar is dragged; the release
+/// frame passes `true` and is the only one that touches disk.
 #[tauri::command]
-async fn resize_to_ratio(app: AppHandle, ratio: f64) -> AppResult<f64> {
-    resize_to_ratio_impl(&app, ratio)
+async fn resize_to_ratio(app: AppHandle, ratio: f64, commit: Option<bool>) -> AppResult<f64> {
+    resize_to_ratio_impl(&app, ratio, commit.unwrap_or(true))
 }
 
 #[tauri::command]
@@ -2562,12 +2691,8 @@ fn present_tab_window(app: &AppHandle, target_label: &str, from_label: &str) -> 
         let _ = target.maximize();
     }
     apply_saved_window_state(app, &target)?;
-    let _ = target.unminimize();
-    target
-        .show()
-        .map_err(|err| format!("Show window failed: {err}"))?;
-    let _ = target.set_focus();
-    sync_shell_visibility(app, &target);
+    // Hide first, then show: leaving both windows visible for one frame paints
+    // two chromes on top of each other, which reads as a flash.
     for label in browser_labels(app) {
         if label == target_label {
             continue;
@@ -2576,6 +2701,12 @@ fn present_tab_window(app: &AppHandle, target_label: &str, from_label: &str) -> 
             let _ = other.hide();
         }
     }
+    let _ = target.unminimize();
+    target
+        .show()
+        .map_err(|err| format!("Show window failed: {err}"))?;
+    let _ = target.set_focus();
+    sync_shell_visibility(app, &target);
     Ok(())
 }
 
@@ -3082,6 +3213,7 @@ pub fn run() {
                 snapping: AtomicBool::new(false),
                 move_seq: AtomicU64::new(0),
                 resize_seq: AtomicU64::new(0),
+                ratio_drag: AtomicBool::new(false),
                 sidebar_visible: AtomicBool::new(true),
                 next_tab_seq: AtomicU64::new(initial_tab_count),
                 hotkey_conflicts: Mutex::new(Vec::new()),
@@ -3111,7 +3243,7 @@ pub fn run() {
                 if on_home {
                     let _ = fit_window_to_start_page(&app.handle().clone());
                 } else if !geometry_ok {
-                    let _ = resize_to_ratio_impl(&app.handle().clone(), 0.5);
+                    let _ = resize_to_ratio_impl(&app.handle().clone(), 0.5, true);
                 }
             }
             // A saved rect can point outside every monitor (unplugged display,
@@ -3120,6 +3252,7 @@ pub fn run() {
             if let Ok(browser) = browser_window(&app.handle().clone()) {
                 let _ = ensure_window_on_screen(&browser);
             }
+            prewarm_restored_tabs(&app.handle().clone());
             setup_tray(&app.handle().clone()).map_err(std::io::Error::other)?;
 
             {

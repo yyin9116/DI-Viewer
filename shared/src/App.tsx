@@ -556,7 +556,12 @@ export default function App() {
                   setUiLang(lang);
                   void run(() => hostBridge.setUiLanguage(lang), 'set_lang', 2500);
                 }}
-                onResizeRatio={(ratio) => void run(() => hostBridge.resizeToRatio(ratio), 'resize_ratio', 3000)}
+                // Deliberately outside `run`: the bar calls this every frame
+                // while dragging, and `run` flips diagnostics state on each
+                // call, which would re-render the whole shell mid-gesture.
+                onResizeRatio={(ratio, commit) => {
+                  void hostBridge.resizeToRatio(ratio, commit).catch(() => undefined);
+                }}
                 onToggleInsideMode={() => {
                   const nextInside = !snapshot.state.inside;
                   void run(() => hostBridge.setInsideMode(nextInside), 'set_inside_mode', 2500);
