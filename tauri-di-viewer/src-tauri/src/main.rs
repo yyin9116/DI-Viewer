@@ -1080,6 +1080,56 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     Object.defineProperty(window, "__diviewer_bridge", { value: window.__diviewer_bridge, writable: false, configurable: false });
   } catch (_e) {}
 
+  // `target="_blank"` has to be turned into a real tab here, in the page.
+  //
+  // WebView2 raises NewWindowRequested for these, and wry is supposed to hand
+  // it to `WebviewBuilder::on_new_window` - but that callback never ran (no
+  // popup_tab line ever reached the log), so every such link was dead: on a
+  // real site that is essentially every link, and the click just did nothing.
+  // Intercepting at document level does not depend on the platform hook at all,
+  // and it lands in the same code path the tab strip uses.
+  const openAsTab = (url) => {
+    try {
+      const target = String(url || '').trim();
+      if (!/^https?:\/\//i.test(target)) return;
+      const result = window.__diviewer_bridge.new_tab(target);
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    } catch (_e) {}
+  };
+
+  try {
+    // window.open from a script (video players, "share" buttons).
+    window.open = function (url) {
+      if (url) openAsTab(url);
+      return null;
+    };
+  } catch (_e) {}
+
+  document.addEventListener(
+    'click',
+    (e) => {
+      if (e.defaultPrevented || e.button !== 0) return;
+      // Ctrl/Cmd/Shift-click keeps its "open elsewhere" meaning, and a middle
+      // click never reaches this listener anyway.
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+      const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+      let anchor = null;
+      for (const node of path) {
+        if (node && node.tagName === 'A' && typeof node.getAttribute === 'function') {
+          anchor = node;
+          break;
+        }
+      }
+      if (!anchor || !anchor.href) return;
+      const rawTarget = String(anchor.getAttribute('target') || '').toLowerCase();
+      if (rawTarget !== '_blank' && rawTarget !== '_new') return;
+      e.preventDefault();
+      e.stopPropagation();
+      openAsTab(anchor.href);
+    },
+    true
+  );
+
   // Initialization scripts run before the document exists: documentElement and
   // body are still null at that point, so DOM setup must defer to
   // DOMContentLoaded or the shell dies with a TypeError and never mounts.
