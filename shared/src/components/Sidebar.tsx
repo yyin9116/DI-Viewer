@@ -128,7 +128,16 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
               <SidebarButton icon={<Bookmark size={22} />} label={t.bookmarks} onClick={onBookmarksClick} dense={dense} />
             </div>
 
-            <div className={`mx-2 flex w-full flex-col items-center justify-center rounded-2xl bg-black/5 px-3 dark:bg-white/5 pointer-events-auto ${dense ? 'gap-1.5 py-2' : 'gap-3 py-4'}`}>
+            {/*
+              * `w-full` plus `mx-2` is 80 + 16 = 96 in an 80px rail: with
+              * `items-center` and negative free space the browser pins the card
+              * to the rail's left edge, so it ends up a fixed 80px block flush
+              * against both edges while every other icon is a 56px button inset
+              * by 12. Subtracting the margin keeps the card 64 wide (8..72),
+              * centred, and only 4px of padding per side leaves the media
+              * buttons the same 56px column as the rest of the rail.
+              */}
+            <div className={`mx-2 flex w-[calc(100%_-_1rem)] flex-col items-center justify-center rounded-2xl bg-black/5 px-1 dark:bg-white/5 pointer-events-auto ${dense ? 'gap-1.5 py-2' : 'gap-3 py-4'}`}>
               <SidebarButton icon={<SkipBack size={18} />} label={t.prev} size="sm" onClick={() => onMediaAction('video_backward')} dense={dense} />
               <SidebarButton icon={<Play size={22} />} label={t.play} onClick={() => onMediaAction('toggle_play_pause')} dense={dense} />
               <SidebarButton icon={<SkipForward size={18} />} label={t.next} size="sm" onClick={() => onMediaAction('video_forward')} dense={dense} />

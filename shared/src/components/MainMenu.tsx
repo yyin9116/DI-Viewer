@@ -55,6 +55,11 @@ interface MainMenuProps {
   onAbout: () => void;
 }
 
+/// Fixed by the backend: registered even when the global hotkey master switch
+/// is off, and it also clears click-through, so it is the guaranteed way out of
+/// a window that no longer accepts clicks.
+const RESCUE_HOTKEY = 'Ctrl+Alt+Shift+R';
+
 const TEXT = {
   zh: {
     settings: '设置',
@@ -72,12 +77,16 @@ const TEXT = {
     zh: '中文',
     en: 'English',
     opacity: '界面透明度',
-    opacityHint: '最低 20%。调低到看不清时，按 Ctrl+Alt+Shift+R 立刻找回窗口。',
+    opacityHint: `最低 20%。调低到看不清时，按 ${RESCUE_HOTKEY} 立刻找回窗口。`,
     windowSection: '窗口行为',
     pinned: '窗口置顶',
     pinnedHint: '其他窗口之上显示',
     insideMode: '点击穿透',
-    insideHint: '鼠标事件交给下层页面，开启后只能用快捷键退出',
+    // The hint names the way out, but the *key* is only knowable at runtime
+    // (it is rebindable and the master switch can be off), so the combo is
+    // rendered separately by `shortcut` rather than baked into this string.
+    insideHint: '鼠标事件交给下层页面',
+    exitWith: '退出',
     positionLock: '锁定位置',
     positionLockHint: '禁止拖动窗口',
     sidebar: '显示侧边栏',
@@ -112,7 +121,7 @@ const TEXT = {
     rescueHint: '把透明度恢复到 100%、关闭点击穿透、取消最小化，并在窗口离开所有显示器时重新居中。',
     rescueSteps: '三种进入方式',
     rescueHotkey: '固定快捷键',
-    rescueHotkeyValue: 'Ctrl+Alt+Shift+R',
+    rescueHotkeyValue: RESCUE_HOTKEY,
     rescueAlways: '即使关闭了全局快捷键也生效',
     rescueTray: '托盘菜单 / 找回窗口',
     rescueRelaunch: '重新启动程序',
@@ -138,12 +147,13 @@ const TEXT = {
     zh: '中文',
     en: 'English',
     opacity: 'Shell opacity',
-    opacityHint: 'Floor is 20%. If it gets too faint, press Ctrl+Alt+Shift+R to bring the window back.',
+    opacityHint: `Floor is 20%. If it gets too faint, press ${RESCUE_HOTKEY} to bring the window back.`,
     windowSection: 'Window behaviour',
     pinned: 'Always on top',
     pinnedHint: 'Float above other windows',
     insideMode: 'Click-through',
-    insideHint: 'Mouse events go to the page below; exit with the shortcut only',
+    insideHint: 'Mouse events go to the page below',
+    exitWith: 'exit',
     positionLock: 'Lock position',
     positionLockHint: 'Dragging is disabled',
     sidebar: 'Show sidebar',
@@ -178,7 +188,7 @@ const TEXT = {
     rescueHint: 'Restores 100% opacity, turns click-through off, un-minimizes, and re-centers when the window is off every monitor.',
     rescueSteps: 'Three ways in',
     rescueHotkey: 'Fixed shortcut',
-    rescueHotkeyValue: 'Ctrl+Alt+Shift+R',
+    rescueHotkeyValue: RESCUE_HOTKEY,
     rescueAlways: 'Works even with global shortcuts disabled',
     rescueTray: 'Tray menu / Restore Window',
     rescueRelaunch: 'Relaunch the app',
@@ -580,6 +590,12 @@ export function MainMenu({
                   icon={<MousePointer2 size={15} />}
                   label={t.insideMode}
                   hint={t.insideHint}
+                  // Once this is on the panel can no longer be clicked, so the
+                  // only way back has to be on screen. With the master switch
+                  // off the configurable binding is not registered - the rescue
+                  // key is, and it clears click-through too.
+                  shortcutLabel={t.exitWith}
+                  shortcut={hotkeysEnabled ? hotkeys.insideMode : RESCUE_HOTKEY}
                   checked={isInsideMode}
                   onChange={onToggleInsideMode}
                 />
@@ -1025,6 +1041,8 @@ function SwitchRow({
   icon,
   label,
   hint,
+  shortcutLabel,
+  shortcut,
   checked,
   onChange,
   last
@@ -1032,6 +1050,10 @@ function SwitchRow({
   icon: React.ReactNode;
   label: string;
   hint?: string;
+  /** Word that labels the combo ("退出" / "exit"). */
+  shortcutLabel?: string;
+  /** The live key combo, rendered as a chip so it reads as a key, not prose. */
+  shortcut?: string;
   checked: boolean;
   onChange: (next: boolean) => void;
   last?: boolean;
@@ -1047,8 +1069,22 @@ function SwitchRow({
       <span className="text-[#5B6470] dark:text-zinc-400">{icon}</span>
       <span className="min-w-0 flex-1">
         <span className="block text-[13px] leading-4 text-[#1F2937] dark:text-zinc-100">{label}</span>
-        {hint ? (
-          <span className="mt-0.5 block truncate text-[12px] leading-[1.5] text-[#5B6470] dark:text-zinc-400">{hint}</span>
+        {hint || shortcut ? (
+          <span className="mt-0.5 flex items-baseline gap-1.5">
+            {hint ? (
+              <span className="min-w-0 flex-1 truncate text-[12px] leading-[1.5] text-[#5B6470] dark:text-zinc-400">
+                {hint}
+              </span>
+            ) : null}
+            {shortcut ? (
+              <>
+                <span className="shrink-0 text-[11px] leading-4 text-[#5B6470] dark:text-zinc-400">{shortcutLabel}</span>
+                <span className="shrink-0 rounded bg-black/[0.06] px-1 font-mono text-[11px] leading-4 tabular-nums text-[#1F2937] dark:bg-white/[0.09] dark:text-zinc-200">
+                  {shortcut}
+                </span>
+              </>
+            ) : null}
+          </span>
         ) : null}
       </span>
       <span
