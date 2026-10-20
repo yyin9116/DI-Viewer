@@ -242,6 +242,10 @@ struct AppState {
     /// True while the width bar is being dragged. Suppresses edge snapping and
     /// per-tick disk writes; the gesture commits once on release.
     ratio_drag: AtomicBool,
+    /// Window edge the current width-bar gesture is anchored to, in physical
+    /// pixels: `(left, bottom)`. Snapshotted when the drag starts so the anchor
+    /// cannot drift if the frame gets clamped at the monitor edge mid-gesture.
+    ratio_anchor: Mutex<Option<(i32, i32)>>,
     sidebar_visible: AtomicBool,
     /// Monotonic counter used to mint stable, unique window labels for tabs.
     /// Labels are never derived from the tab index (indexes shift on close),
@@ -431,6 +435,29 @@ fn font_asset_response(path: &str) -> tauri::http::Response<Vec<u8>> {
             .body(Vec::new())
             .unwrap_or_else(|_| tauri::http::Response::new(Vec::new())),
     }
+}
+
+/// Registers the bundled Sarasa faces in a document on its own.
+///
+/// Browser tabs get this through the shell bootstrap, but the control window is
+/// a plain `WebviewWindow` that never runs that script - so without this it
+/// fell back to Segoe UI / YaHei and looked like the pre-Sarasa build.
+fn font_pack_script() -> String {
+    format!(
+        r#"(() => {{
+  if (!window.FontFace || !document.fonts) return;
+  const faces = [['400', '{regular}'], ['600', '{semibold}']];
+  for (const pair of faces) {{
+    try {{
+      const face = new FontFace('Sarasa Gothic SC', 'url("' + pair[1] + '") format("woff2")', {{ weight: pair[0], style: 'normal', display: 'swap' }});
+      document.fonts.add(face);
+      if (face.load) face.load().catch(() => {{}});
+    }} catch (_e) {{}}
+  }}
+}})();"#,
+        regular = font_url(FONT_PATH_REGULAR),
+        semibold = font_url(FONT_PATH_SEMIBOLD)
+    )
 }
 
 fn resolve_home_url(app: &AppHandle) -> String {    let _ = app; // signature kept for existing callers
@@ -762,6 +789,7 @@ fn create_or_show_control_window(app: &AppHandle) -> AppResult<()> {
                 "DI-Viewer \u{63A7}\u{5236}\u{53F0}",
                 "DI-Viewer Control",
             ))
+            .initialization_script(&font_pack_script())
             .inner_size(760.0, 940.0)
             .additional_browser_args(&browser_args)
             .resizable(true)
@@ -1543,22 +1571,61 @@ fn resize_to_ratio_impl(app: &AppHandle, ratio: f64, commit: bool) -> AppResult<
         .round()
         .clamp(320.0, monitor_size.height as f64) as u32;
 
-    let same_size = browser
+    // Geometry is read once, in physical pixels: mixing inner and outer sizes
+    // would let the frame (~31px of title bar) leak into the anchor and walk the
+    // window up the screen a frame at a time.
+    let inner_now = browser
         .inner_size()
-        .map(|s| s.width == width && s.height == height)
-        .unwrap_or(false);
+        .map_err(|err| format!("Read size failed: {err}"))?;
+    let outer_now = browser
+        .outer_size()
+        .map_err(|err| format!("Read size failed: {err}"))?;
+    let position_now = browser
+        .outer_position()
+        .map_err(|err| format!("Read position failed: {err}"))?;
+
+    let same_size = inner_now.width == width && inner_now.height == height;
     if !same_size {
         browser
             .set_size(Size::Physical(PhysicalSize::new(width, height)))
             .map_err(|err| format!("Set size failed: {err}"))?;
     }
 
-    let x = monitor_pos.x + ((monitor_size.width as i32 - width as i32) / 2);
-    let y = monitor_pos.y + ((monitor_size.height as i32 - height as i32) / 2);
-    let same_position = browser
-        .outer_position()
-        .map(|p| p.x == x && p.y == y)
-        .unwrap_or(false);
+    // Anchor the window's left edge and its bottom edge instead of recentering
+    // it. The width bar lives in a panel pinned to the window's bottom-left
+    // corner, so moving either of those edges slides the track out from under
+    // the cursor: at the old centre-anchored maths a 5% change moved the track
+    // by ~65px while the pointer stayed put, the input recomputed the thumb from
+    // that new pointer position, and the feedback turned a slow drag into
+    // preset-sized jumps that eventually escaped the pointer entirely. Pinning
+    // the two edges the shell hangs off keeps the gesture 1:1.
+    //
+    // The anchor is snapshotted on the first frame of a gesture. Re-reading the
+    // live rect every frame let it drift whenever the clamp at the monitor edge
+    // moved the window, and one drift is enough to shift the pointer's clientX.
+    let frame_w = outer_now.width.saturating_sub(inner_now.width) as i32;
+    let frame_h = outer_now.height.saturating_sub(inner_now.height) as i32;
+    let bottom = position_now.y + outer_now.height as i32;
+    let anchor = {
+        let mut slot = state
+            .ratio_anchor
+            .lock()
+            .map_err(|_| "Ratio anchor lock poisoned".to_string())?;
+        if commit {
+            *slot = None;
+        }
+        *slot.get_or_insert((position_now.x, bottom))
+    };
+    let (anchor_x, anchor_bottom) = anchor;
+    // The anchored edges lose at the extremes: a 100% window cannot hang 300px
+    // above the monitor, so the frame is pulled back inside it.
+    let min_x = monitor_pos.x;
+    let min_y = monitor_pos.y;
+    let max_x = monitor_pos.x + monitor_size.width as i32 - (width as i32 + frame_w);
+    let max_y = monitor_pos.y + monitor_size.height as i32 - (height as i32 + frame_h);
+    let x = anchor_x.clamp(min_x, max_x.max(min_x));
+    let y = (anchor_bottom - (height as i32 + frame_h)).clamp(min_y, max_y.max(min_y));
+    let same_position = position_now.x == x && position_now.y == y;
     if !same_position {
         browser
             .set_position(Position::Physical(PhysicalPosition::new(x, y)))
@@ -2690,6 +2757,28 @@ fn sync_shell_visibility(app: &AppHandle, view: &Webview) {
 /// scroll position, form input and media playback survive the switch. The OS
 /// window never moves, resizes, hides or shows - which is why switching no
 /// longer looks like the app restarting.
+/// Re-applies the window's size to one webview.
+///
+/// WebView2 defers relayout while a controller is invisible, so a tab that was
+/// hidden when the window changed size comes back laid out for the *old* size:
+/// the page kept its 1220px viewport inside a 900px window and the shell's
+/// `100vh` rail centred its icons for a height that no longer existed. Showing
+/// the view alone does not guarantee the relayout in the same tick, but setting
+/// its bounds again while it is visible does.
+fn reflow_webview(window: &Window, view: &Webview) {
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
+    let logical = LogicalSize::new(
+        (size.width as f64 / scale).max(1.0),
+        (size.height as f64 / scale).max(1.0),
+    );
+    if let Err(err) = view.set_size(Size::Logical(logical)) {
+        eprintln!("[diviewer-log] reflow:set_size:failed {err}");
+    }
+}
+
 fn present_tab(app: &AppHandle, target_label: &str) -> AppResult<()> {
     let window = browser_window(app)?;
     let target = ensure_tab_webview(app, target_label)?;
@@ -2705,6 +2794,7 @@ fn present_tab(app: &AppHandle, target_label: &str) -> AppResult<()> {
     }
     apply_saved_window_state(app, &window)?;
     let _ = target.show();
+    reflow_webview(&window, &target);
     if !window.is_visible().unwrap_or(true) {
         let _ = window.show();
     }
@@ -3186,6 +3276,7 @@ pub fn run() {
                 move_seq: AtomicU64::new(0),
                 resize_seq: AtomicU64::new(0),
                 ratio_drag: AtomicBool::new(false),
+                ratio_anchor: Mutex::new(None),
                 sidebar_visible: AtomicBool::new(true),
                 next_tab_seq: AtomicU64::new(initial_tab_count),
                 hotkey_conflicts: Mutex::new(Vec::new()),

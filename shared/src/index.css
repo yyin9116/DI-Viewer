@@ -69,6 +69,54 @@
   text-rendering: optimizeLegibility;
 }
 
+/*
+ * The shell is mounted in a shadow root, so `:root` above only reaches the host
+ * page. Everything the shell depends on has to be restated on the host: without
+ * this the base type came from whichever site was open (the shadow tree
+ * inherits font-family from the host element, not from `html`).
+ */
+:host {
+  font-family: var(--font-sans);
+  letter-spacing: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/*
+ * Width bar. The window resizes *while* this is being dragged, so the thumb has
+ * to stay big enough to hold onto and the track must not be re-laid out by the
+ * browser's default appearance.
+ */
+.diviewer-ratio {
+  touch-action: none;
+}
+.diviewer-ratio::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+.diviewer-ratio::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px;
+  border-radius: 999px;
+  border: 2px solid #ffffff;
+  background: var(--color-brand-500);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+  cursor: grab;
+}
+.diviewer-ratio:active::-webkit-slider-thumb {
+  cursor: grabbing;
+}
+.dark .diviewer-ratio::-webkit-slider-runnable-track {
+  background: #3f3f46;
+}
+.dark .diviewer-ratio::-webkit-slider-thumb {
+  border-color: #17171b;
+}
+
 html,
 body {
   margin: 0;
@@ -93,10 +141,21 @@ body {
   background: transparent;
 }
 
-button,
-input,
-select {
-  font: inherit;
+/*
+ * Form controls do not inherit type by default, so this has to exist — but it
+ * must sit in `base`, not outside every layer. Unlayered rules beat *any*
+ * layered one, so a bare `button { font: inherit }` silently won over
+ * `text-[12px]` / `font-semibold` on every button in the shell: tab chips,
+ * segmented options and menu items all rendered at the inherited 16px/400 no
+ * matter what the markup asked for. Only elements without a size class looked
+ * right, which is why the mismatch read as "the old typography".
+ */
+@layer base {
+  button,
+  input,
+  select {
+    font: inherit;
+  }
 }
 
 .scrollbar-hide {

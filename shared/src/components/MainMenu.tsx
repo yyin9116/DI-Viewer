@@ -329,6 +329,16 @@ export function MainMenu({
   const labels = HOTKEY_LABELS[lang];
   const viewport = useViewport();
 
+  /*
+   * Density follows window *height*, not width. The panel is a fixed 368px
+   * column, so the 1/3 preset (853x480) has all the width it needs but less
+   * than half the vertical room: the 窗口 tab overflowed its scroll body by
+   * ~40px, and with the scrollbar hidden the half-cut last row read as a
+   * rendering bug instead of "scroll for more". Tightening the vertical rhythm
+   * is what lets the whole card fit untouched.
+   */
+  const dense = viewport.height < 560;
+
   useEffect(() => {
     setEditingHotkeys(hotkeys);
     setRecordingKey(null);
@@ -400,18 +410,35 @@ export function MainMenu({
     { id: 'recovery', label: t.tabs.recovery, icon: <LifeBuoy size={13} /> }
   ];
 
+  // `calc(100vh-40px)` is not valid CSS: without spaces around the minus the
+  // whole declaration is dropped, so the panel had no max height at all and ran
+  // straight off the bottom of a 480px-tall window. Underscores are Tailwind's
+  // way of writing those spaces. The dense variant also trims the bottom gap so
+  // the panel can claim 24px more height.
   return (
     <motion.div
       initial={{ opacity: 0, scale: 0.97, y: 12 }}
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.97, y: 12 }}
       transition={{ type: 'spring', damping: 30, stiffness: 340 }}
-      className="pointer-events-auto absolute bottom-6 left-24 z-[2147483647] flex max-h-[calc(100vh-40px)] w-[368px] flex-col overflow-hidden rounded-[26px] border border-[#D6DEEA] bg-[#F3F6FB] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.28)] backdrop-blur-2xl dark:border-[#272727] dark:bg-[#0B0B0D]"
+      style={
+        {
+          '--mm-row-h': dense ? '40px' : '44px',
+          '--mm-row-y': dense ? '8px' : '10px'
+        } as React.CSSProperties
+      }
+      className={`pointer-events-auto absolute left-24 z-[2147483647] flex w-[368px] flex-col overflow-hidden rounded-[26px] border border-[#D6DEEA] bg-[#F3F6FB] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.28)] backdrop-blur-2xl dark:border-[#272727] dark:bg-[#0B0B0D] ${
+        dense ? 'bottom-3 max-h-[calc(100vh_-_24px)]' : 'bottom-6 max-h-[calc(100vh_-_40px)]'
+      }`}
     >
       {/* Header */}
-      <div className="flex shrink-0 items-start justify-between px-4 pt-4">
+      <div className={`flex shrink-0 items-start justify-between px-4 ${dense ? 'pt-3' : 'pt-4'}`}>
         <div>
-          <h2 className="text-[21px] font-semibold leading-[28px] text-[#1F2937] dark:text-white">
+          <h2
+            className={`font-semibold text-[#1F2937] dark:text-white ${
+              dense ? 'text-[18px] leading-[24px]' : 'text-[21px] leading-[28px]'
+            }`}
+          >
             {t.settings}
           </h2>
           <p className="mt-0.5 text-[11px] leading-4 text-[#5B6470] dark:text-zinc-400">
@@ -428,7 +455,11 @@ export function MainMenu({
       </div>
 
       {/* Segmented navigation */}
-      <div className="mx-4 mt-3 flex shrink-0 gap-[2px] rounded-[10px] bg-black/[0.05] p-[3px] dark:bg-white/[0.06]">
+      <div
+        className={`mx-4 flex shrink-0 gap-[2px] rounded-[10px] bg-black/[0.05] p-[3px] dark:bg-white/[0.06] ${
+          dense ? 'mt-2' : 'mt-3'
+        }`}
+      >
         {tabs.map((tab) => {
           const active = view === tab.id;
           return (
@@ -450,7 +481,7 @@ export function MainMenu({
       </div>
 
       {/* Body */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 scrollbar-hide">
+      <div className={`min-h-0 flex-1 overflow-y-auto scrollbar-hide ${dense ? 'px-3.5 py-3' : 'px-4 py-4'}`}>
         <AnimatePresence mode="wait" initial={false}>
           {view === 'appearance' && (
             <motion.div
@@ -459,7 +490,7 @@ export function MainMenu({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="space-y-3.5"
+              className={dense ? 'space-y-2.5' : 'space-y-3.5'}
             >
               <Card>
                 <Row label={t.theme}>
@@ -521,7 +552,7 @@ export function MainMenu({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="space-y-3.5"
+              className={dense ? 'space-y-2.5' : 'space-y-3.5'}
             >
               <Card>
                 <div className="px-3.5 pb-3 pt-3">
@@ -578,7 +609,7 @@ export function MainMenu({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="space-y-3.5"
+              className={dense ? 'space-y-2.5' : 'space-y-3.5'}
             >
               <Card>
                 <SwitchRow
@@ -713,7 +744,7 @@ export function MainMenu({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -4 }}
               transition={{ duration: 0.14 }}
-              className="space-y-3.5"
+              className={dense ? 'space-y-2.5' : 'space-y-3.5'}
             >
               <div className="rounded-[14px] border border-brand-500/25 bg-brand-500/[0.07] p-3.5 dark:border-brand-500/30 dark:bg-brand-500/10">
                 <button
@@ -808,6 +839,7 @@ function RatioBar({
 
   useEffect(() => () => {
     if (frame.current) window.cancelAnimationFrame(frame.current);
+    detachDrag();
     // The panel can be dismissed mid-drag; land the last preview instead of
     // leaving the backend in "dragging" mode (it suppresses snapping and
     // geometry persistence until a commit arrives).
@@ -855,6 +887,57 @@ function RatioBar({
 
   const readValue = (target: EventTarget | null) =>
     parseInt((target as HTMLInputElement | null)?.value ?? String(value), 10);
+  const dragging = useRef<{ startX: number; startValue: number; width: number } | null>(null);
+  const attached = useRef<{ move: (e: PointerEvent) => void; up: (e: PointerEvent) => void; cancel: () => void } | null>(
+    null
+  );
+  const latest = useRef(value);
+  latest.current = value;
+
+  const detachDrag = () => {
+    const bound = attached.current;
+    if (!bound) return;
+    attached.current = null;
+    window.removeEventListener('pointermove', bound.move, true);
+    window.removeEventListener('pointerup', bound.up, true);
+    window.removeEventListener('pointercancel', bound.cancel, true);
+  };
+
+  /*
+   * The drag is driven from `pointermove` on the window rather than from the
+   * input's own tracking. Resizing the window makes WebView2 drop the pointer
+   * capture (WM_CAPTURECHANGED) and Chromium fires `pointercancel`, which ended
+   * the native range drag after the very first step - the bar could only be
+   * clicked through its presets. Listening on the window keeps the gesture alive
+   * across resizes.
+   *
+   * Coordinates are screen-space: a window resize also makes Windows report the
+   * *stationary* hardware cursor to the page, and those hover events would
+   * otherwise read as huge drag deltas. `buttons` filters them out, `screenX`
+   * keeps the maths independent of the page's own scrolling.
+   */
+  const stopDrag = (screenX?: number, commitIt = true) => {
+    const drag = dragging.current;
+    if (!drag) return;
+    dragging.current = null;
+    detachDrag();
+    if (!commitIt) return;
+    const next =
+      screenX == null
+        ? latest.current
+        : clamp(drag.startValue + ((screenX - drag.startX) / drag.width) * 80);
+    commit(next);
+  };
+
+  const onDragUp = (e: PointerEvent) => stopDrag(e.screenX, true);
+  const onDragCancel = () => stopDrag(undefined, true);
+
+  const onDragMove = (e: PointerEvent) => {
+    const drag = dragging.current;
+    if (!drag) return;
+    if ((e.buttons & 1) === 0) return;
+    preview(drag.startValue + ((e.screenX - drag.startX) / drag.width) * 80);
+  };
 
   return (
     <>
@@ -864,11 +947,33 @@ function RatioBar({
         max="100"
         step="1"
         value={value}
-        onChange={(e) => preview(parseInt(e.target.value, 10))}
-        onPointerUp={(e) => commit(readValue(e.target))}
+        onChange={(e) => {
+          // While our own gesture is running the native slider is not the
+          // source of truth; it re-syncs on every window resize and reports a
+          // clamped value (100) that would fling the window to full screen.
+          if (dragging.current) return;
+          preview(parseInt(e.target.value, 10));
+        }}
+        onPointerDown={(e) => {
+          // Own the gesture. Letting the native range drag run as well means
+          // two things fight over the same value once the window starts
+          // resizing.
+          e.preventDefault();
+          e.currentTarget.focus();
+          const rect = e.currentTarget.getBoundingClientRect();
+          // Clicking anywhere on the track jumps there first, like a native
+          // range, and the drag then continues from that value.
+          const clicked = clamp(20 + ((e.clientX - rect.left) / rect.width) * 80);
+          preview(clicked);
+          dragging.current = { startX: e.screenX, startValue: clicked, width: rect.width };
+          attached.current = { move: onDragMove, up: onDragUp, cancel: onDragCancel };
+          window.addEventListener('pointermove', onDragMove, true);
+          window.addEventListener('pointerup', onDragUp, true);
+          window.addEventListener('pointercancel', onDragCancel, true);
+        }}
         onKeyUp={(e) => commit(readValue(e.target))}
         onBlur={(e) => commit(readValue(e.target))}
-        className="mt-2.5 h-1.5 w-full cursor-pointer appearance-none rounded-full bg-slate-200 accent-brand-700 dark:accent-brand-400 dark:bg-zinc-700"
+        className="diviewer-ratio mt-2 h-4 w-full cursor-pointer appearance-none bg-transparent"
         aria-label={t.presets}
       />
       <div className="mt-2 flex items-center justify-between">
@@ -906,7 +1011,7 @@ function Card({ children }: { children: React.ReactNode }) {
 function Row({ label, children, last }: { label: string; children: React.ReactNode; last?: boolean }) {
   return (
     <div
-      className={`flex h-11 items-center gap-3 px-3.5 ${
+      className={`flex h-[var(--mm-row-h,44px)] items-center gap-3 px-3.5 ${
         last ? '' : 'border-b border-[#D6DEEA] dark:border-zinc-800'
       }`}
     >
@@ -935,7 +1040,7 @@ function SwitchRow({
     <button
       type="button"
       onClick={() => onChange(!checked)}
-      className={`flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${
+      className={`flex w-full items-center gap-2.5 px-3.5 py-[var(--mm-row-y,10px)] text-left transition-colors hover:bg-black/[0.03] dark:hover:bg-white/[0.04] ${
         last ? '' : 'border-b border-[#D6DEEA] dark:border-zinc-800'
       }`}
     >
@@ -974,7 +1079,7 @@ function RecoveryRow({
 }) {
   return (
     <div
-      className={`flex items-center gap-3 px-3.5 py-2.5 ${
+      className={`flex items-center gap-3 px-3.5 py-[var(--mm-row-y,10px)] ${
         last ? '' : 'border-b border-[#D6DEEA] dark:border-zinc-800'
       }`}
     >

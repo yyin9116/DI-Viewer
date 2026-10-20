@@ -102,13 +102,13 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
             opacity: isOpen ? 1 : 0
           }}
           transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
-          className={`relative flex h-full w-20 flex-col items-center overflow-y-auto scrollbar-hide ${dense ? 'gap-1 py-2' : 'py-6'} ${isOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}
+          className={`relative grid h-full w-20 grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)] justify-items-center overflow-y-auto scrollbar-hide ${dense ? 'gap-1 py-2' : 'py-6'} ${isOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}
         >
           <button
             type="button"
             onClick={onToggle}
             title={isOpen ? t.collapse : t.expand}
-            className={`group relative flex shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-2xl border border-slate-200/50 bg-white/60 shadow-sm transition-colors hover:bg-slate-100/70 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 ${dense ? 'h-9 w-9' : 'h-12 w-12'}`}
+            className={`group relative row-start-1 flex shrink-0 cursor-pointer items-center justify-center self-start overflow-hidden rounded-2xl border border-slate-200/50 bg-white/60 shadow-sm transition-colors hover:bg-slate-100/70 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 ${dense ? 'h-9 w-9' : 'h-12 w-12'}`}
           >
             <div className="absolute inset-0 bg-slate-100/50 opacity-0 transition-opacity duration-300 group-hover:opacity-100 dark:bg-zinc-700/50" />
             <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className={`${dense ? 'h-7 w-7' : 'h-9 w-9'} -translate-y-0.5 text-slate-700 drop-shadow-sm transition-transform duration-300 group-hover:scale-110 dark:text-slate-200`}>
@@ -118,7 +118,12 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
             </svg>
           </button>
 
-          <div className={`flex w-full flex-1 flex-col items-center justify-center ${dense ? 'gap-2' : 'gap-4'}`}>
+          {/* `1fr auto 1fr` (see the rail above): the two flexible rows always
+              end up the same height, so this cluster sits on the rail's true
+              vertical centre at every window height. `my-auto` could only
+              centre it between the logo and the gear, which drifted off-centre
+              as soon as the window got shorter. */}
+          <div className={`row-start-2 flex w-full flex-col items-center ${dense ? 'gap-2' : 'gap-4'}`}>
             <div className="w-full px-3">
               <SidebarButton icon={<Bookmark size={22} />} label={t.bookmarks} onClick={onBookmarksClick} dense={dense} />
             </div>
@@ -143,7 +148,7 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
             </div>
           </div>
 
-          <div className="w-full px-3">
+          <div className="row-start-3 w-full self-end px-3">
             <div className="mx-auto my-1 h-px w-8 bg-black/10 dark:bg-white/10" />
             <SidebarButton icon={<Settings size={22} />} label={t.settings} onClick={onSettingsClick} dense={dense} />
           </div>
