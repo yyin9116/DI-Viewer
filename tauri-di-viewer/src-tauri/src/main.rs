@@ -17,7 +17,7 @@ use std::{
         Mutex,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -242,6 +242,13 @@ struct AppState {
     /// True while the width bar is being dragged. Suppresses edge snapping and
     /// per-tick disk writes; the gesture commits once on release.
     ratio_drag: AtomicBool,
+    /// When the last width-bar preview frame landed. The boolean above is not
+    /// enough on its own: a gesture that never sees its release (pointerup
+    /// outside the window, alt-tab, a lost webview capture) leaves it set
+    /// forever, and every later move event returns early — which is exactly
+    /// how edge snapping disappeared, permanently, until the app restarted.
+    /// `ratio_gesture_active` treats a stale flag as "no gesture".
+    ratio_drag_at: Mutex<Option<Instant>>,
     /// Window edge the current width-bar gesture is anchored to, in physical
     /// pixels: `(left, bottom)`. Snapshotted when the drag starts so the anchor
     /// cannot drift if the frame gets clamped at the monitor edge mid-gesture.
@@ -957,7 +964,8 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     'set_ui_language',
     'set_dock_color',
     'resize_to_ratio',
-    'open_control_panel'
+    'open_control_panel',
+    'open_external'
   ]);
 
   const call = (cmd, args) => {
@@ -1015,6 +1023,20 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     set_dock_color: (color) => call('set_dock_color', { color: String(color || 'white') }),
     resize_to_ratio: (ratio, commit) => call('resize_to_ratio', { ratio: Number(ratio || 0.5), commit: commit !== false }),
     open_control_panel: () => call('open_control_panel'),
+    // The settings panel's "About" row. It was wired straight to a command the
+    // injected bridge never exposed, so every click rejected with
+    // "Bridge method not found: open_external" and the error card came up.
+    // Only http(s) leaves the app: this runs inside pages the user browses, so
+    // forwarding an arbitrary scheme (file:, ms-settings:, a bare executable
+    // path) would turn a page script into a local launcher.
+    open_external: (url) => {
+      const target = String(url || '').trim();
+      const lower = target.toLowerCase();
+      if (!lower.startsWith('http://') && !lower.startsWith('https://')) {
+        return Promise.reject(new Error('Only http(s) urls can be opened externally'));
+      }
+      return call('open_external', { url: target });
+    },
     close_app: () => call('close_app')
   };
 
@@ -1258,6 +1280,40 @@ fn apply_window_effects(
     _click_through: bool,
 ) -> AppResult<()> {
     Ok(())
+}
+
+/// How long a width-bar preview frame may stand as evidence of a live gesture.
+///
+/// The gesture publishes a frame every animation frame while the pointer is
+/// down, so a quiet 600ms means the release was simply never delivered. Long
+/// enough that a slow, deliberate drag never has a frame classified as stale,
+/// short enough that snapping resumes well before the user grabs the window by
+/// its title bar again.
+const RATIO_DRAG_TTL_MS: u64 = 600;
+
+/// Whether a width-bar gesture is genuinely in flight right now.
+///
+/// Never consult `ratio_drag` directly: it is only cleared by the commit frame,
+/// and any path that loses the pointerup strands it at `true` forever.
+fn ratio_gesture_active(state: &AppState) -> bool {
+    if !state.ratio_drag.load(Ordering::SeqCst) {
+        return false;
+    }
+    // A poisoned lock must not resurrect the stuck-forever behaviour this
+    // helper exists to prevent, so recover the value and fall through.
+    let started = match state.ratio_drag_at.lock() {
+        Ok(guard) => *guard,
+        Err(poisoned) => *poisoned.into_inner(),
+    };
+    drag_flag_fresh(started, Instant::now())
+}
+
+/// The pure half of `ratio_gesture_active`, so the staleness rule can be
+/// tested without standing up an `AppState`.
+fn drag_flag_fresh(started: Option<Instant>, now: Instant) -> bool {
+    started
+        .map(|at| now.saturating_duration_since(at) < Duration::from_millis(RATIO_DRAG_TTL_MS))
+        .unwrap_or(false)
 }
 
 fn snap_browser_to_edge(app: &AppHandle) -> AppResult<()> {
@@ -1554,8 +1610,15 @@ fn resize_to_ratio_impl(app: &AppHandle, ratio: f64, commit: bool) -> AppResult<
     // The width bar drives this on every animation frame while it is being
     // dragged. Flag the gesture so the move handler does not snap the window
     // away mid-drag and so nothing writes history.json 60 times a second; the
-    // release frame (`commit`) is what lands on disk.
+    // release frame (`commit`) is what lands on disk. The timestamp is what
+    // keeps a lost release from freezing that flag on forever.
     state.ratio_drag.store(!commit, Ordering::SeqCst);
+    match state.ratio_drag_at.lock() {
+        Ok(mut slot) => *slot = if commit { None } else { Some(Instant::now()) },
+        Err(poisoned) => {
+            *poisoned.into_inner() = if commit { None } else { Some(Instant::now()) };
+        }
+    }
 
     let monitor = browser
         .current_monitor()
@@ -2291,7 +2354,7 @@ fn attach_browser_window_events(app: &AppHandle, window: &Window) {
             let state = app_handle.state::<AppState>();
             // A width-bar drag moves the window every frame; snapping to an
             // edge mid-gesture would fight the user's hand.
-            if state.ratio_drag.load(Ordering::SeqCst) {
+            if ratio_gesture_active(&state) {
                 return;
             }
             let seq = state.move_seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -2309,7 +2372,7 @@ fn attach_browser_window_events(app: &AppHandle, window: &Window) {
             // Resized fires continuously while dragging edges; debounce the
             // disk write instead of persisting on every tick.
             let state = app_handle.state::<AppState>();
-            if state.ratio_drag.load(Ordering::SeqCst) {
+            if ratio_gesture_active(&state) {
                 return;
             }
             let seq = state.resize_seq.fetch_add(1, Ordering::SeqCst) + 1;
@@ -3145,8 +3208,16 @@ async fn close_app(app: AppHandle) -> AppResult<()> {
 
 #[tauri::command]
 async fn open_external(app: AppHandle, url: String) -> AppResult<()> {
+    // The injected bridge already filters this, but the command is reachable
+    // from the tab webviews too: refuse anything that is not a web link so a
+    // page cannot hand the shell an executable path or a system verb.
+    let target = url.trim();
+    let lower = target.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err("Only http(s) urls can be opened externally".to_string());
+    }
     app.opener()
-        .open_url(url, None::<String>)
+        .open_url(target.to_string(), None::<String>)
         .map_err(|err| format!("Open external url failed: {err}"))
 }
 
@@ -3276,6 +3347,7 @@ pub fn run() {
                 move_seq: AtomicU64::new(0),
                 resize_seq: AtomicU64::new(0),
                 ratio_drag: AtomicBool::new(false),
+                ratio_drag_at: Mutex::new(None),
                 ratio_anchor: Mutex::new(None),
                 sidebar_visible: AtomicBool::new(true),
                 next_tab_seq: AtomicU64::new(initial_tab_count),
@@ -3398,5 +3470,29 @@ mod tests {
             normalize_url_with_home("example.com/path", home),
             "https://example.com/path"
         );
+    }
+
+    /// The width bar publishes a frame every animation frame, so a started-at
+    /// timestamp that has gone quiet is proof the release was lost. Without
+    /// that rule `ratio_drag` stayed `true` forever and the move handler
+    /// returned early on every event — edge snapping died until restart.
+    #[test]
+    fn a_stranded_drag_flag_expires() {
+        let now = Instant::now();
+        assert!(drag_flag_fresh(Some(now), now));
+        assert!(drag_flag_fresh(
+            Some(now - Duration::from_millis(50)),
+            now
+        ));
+        assert!(!drag_flag_fresh(
+            Some(now - Duration::from_millis(RATIO_DRAG_TTL_MS + 1)),
+            now
+        ));
+        assert!(!drag_flag_fresh(
+            Some(now - Duration::from_secs(30)),
+            now
+        ));
+        // A flag with no timestamp means the gesture never published a frame.
+        assert!(!drag_flag_fresh(None, now));
     }
 }

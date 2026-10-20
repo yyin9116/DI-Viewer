@@ -75,11 +75,11 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [tabHistoryState, setTabHistoryState] = useState<Record<string, TabHistoryState>>({});
   const [uiLang, setUiLang] = useState<UILang>('zh');
-  const [diagMessage, setDiagMessage] = useState<string | null>(null);
+  /// Transient, user-facing notice (entering click-through). Named for what it
+  /// is: the old `diagMessage` also carried `label:start` / `label:ok` traces
+  /// from every bridge call, which surfaced as a grey debug box in the corner.
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
-  const [isBridgeLogVisible, setIsBridgeLogVisible] = useState(false);
-  const [logLines, setLogLines] = useState<string[]>([]);
-  const diagOnceRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     setTabHistoryState((current) => {
       const next: Record<string, TabHistoryState> = {};
@@ -144,21 +144,7 @@ export default function App() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setBridgeError(message);
-      pushLog(`sync:error:${message}`);
     }
-  };
-  const showDiagOnce = (key: string, message: string) => {
-    if (diagOnceRef.current.has(key)) return;
-    diagOnceRef.current.add(key);
-    setDiagMessage(message);
-    window.setTimeout(() => setDiagMessage(null), 1400);
-  };
-  const pushLog = (message: string) => {
-    const stamp = new Date().toLocaleTimeString('en-GB', { hour12: false });
-    setLogLines((current) => {
-      const next = [...current, `${stamp} fe:${message}`];
-      return next.slice(-30);
-    });
   };
   useEffect(() => {
     let mounted = true;
@@ -174,7 +160,6 @@ export default function App() {
         if (!mounted) return;
         const message = error instanceof Error ? error.message : String(error);
         setBridgeError(message);
-        pushLog(`sync:error:${message}`);
       }
     };
     const triggerSync = () => {
@@ -182,31 +167,10 @@ export default function App() {
     };
     void sync();
     const timer = window.setInterval(sync, 1200);
-    const logTimer = window.setInterval(async () => {
-      try {
-        const logs = await hostBridge.getLogs();
-        if (!mounted || !Array.isArray(logs)) return;
-        const lines = logs.slice(-30).map((entry: any) => {
-          const ts = typeof entry?.ts === 'number'
-            ? new Date(entry.ts).toLocaleTimeString('en-GB', { hour12: false })
-            : '';
-          const source = entry?.source ? String(entry.source) : 'ui';
-          const action = entry?.action ? String(entry.action) : 'action';
-          const detail = entry?.detail ? String(entry.detail) : '';
-          return `${ts} ${source}:${action}${detail ? `:${detail}` : ''}`.trim();
-        });
-        setLogLines(lines);
-      } catch (error) {
-        if (!mounted) return;
-        const message = error instanceof Error ? error.message : String(error);
-        pushLog(`logs:error:${message}`);
-      }
-    }, 700);
     window.addEventListener('diviewer:sync', triggerSync);
     return () => {
       mounted = false;
       window.clearInterval(timer);
-      window.clearInterval(logTimer);
       window.removeEventListener('diviewer:sync', triggerSync);
     };
   }, []);
@@ -269,12 +233,15 @@ export default function App() {
     }
     window.dispatchEvent(new CustomEvent('diviewer:language-change', { detail: { lang: uiLang } }));
   }, [uiLang]);
+  /*
+   * Wraps a bridge call so a hung one cannot wedge the UI. It used to emit a
+   * `label:start` / `label:ok` toast on every single call, which put a grey
+   * monospace box in the corner of a shipping build — indistinguishable from
+   * debug chrome, because it was. Failures still reach the bridge-error card;
+   * the happy path is silent now.
+   */
   const run = async (action: () => Promise<unknown>, label?: string, timeoutMs = 1800) => {
     let timedOut = false;
-    if (label) {
-      showDiagOnce(`${label}-start`, `${label}:start`);
-      pushLog(`${label}:start`);
-    }
     try {
       await Promise.race([
         action(),
@@ -283,20 +250,9 @@ export default function App() {
           reject(new Error('bridge timeout'));
         }, timeoutMs))
       ]);
-      if (label) {
-        showDiagOnce(`${label}-ok`, `${label}:ok`);
-        pushLog(`${label}:ok`);
-      }
     } catch {
-      let message = '';
       if (label) {
-        message = timedOut ? 'bridge timeout' : `${label} failed`;
-        setBridgeError(message);
-      }
-      if (label) {
-        const suffix = timedOut ? 'timeout' : 'error';
-        showDiagOnce(`${label}-${suffix}`, `${label}:${suffix}`);
-        pushLog(`${label}:${suffix}`);
+        setBridgeError(timedOut ? 'bridge timeout' : `${label} failed`);
       }
     }
     void syncSnapshot();
@@ -491,9 +447,9 @@ export default function App() {
               compact={compact}
             />
           </div>
-          {diagMessage && (
-            <div className="pointer-events-none fixed bottom-3 right-3 z-[2147483647] rounded-xl border border-slate-200/70 bg-white/80 px-3 py-2 text-xs font-mono text-slate-700 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/80 dark:text-slate-200">
-              {diagMessage}
+          {toastMessage && (
+            <div className="pointer-events-none fixed bottom-3 right-3 z-[2147483647] rounded-xl border border-slate-200/70 bg-white/80 px-3 py-2 text-xs text-slate-700 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/80 dark:text-slate-200">
+              {toastMessage}
             </div>
           )}
           {bridgeError && (
@@ -501,32 +457,6 @@ export default function App() {
               <div className="font-semibold text-rose-700 dark:text-rose-300">{I18N[uiLang].bridgeErrorTitle}</div>
               <div className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">{I18N[uiLang].bridgeErrorBody}</div>
               <div className="mt-2 rounded-lg bg-rose-50 px-2 py-1 font-mono text-[11px] text-rose-700 dark:bg-rose-950/40 dark:text-rose-200">{bridgeError}</div>
-            </div>
-          )}
-          {isBridgeLogVisible && logLines.length > 0 && (
-            <div className="fixed left-3 top-3 z-[2147483647] pointer-events-auto w-[320px] rounded-2xl border border-gray-100 bg-white/90 p-2 text-[11px] font-mono text-gray-600 shadow-sm backdrop-blur dark:border-gray-800 dark:bg-gray-900/90 dark:text-gray-300">
-              <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-gray-400 dark:text-gray-500">
-                <span>Bridge Log</span>
-                <button
-                  type="button"
-                  onClick={() => navigator.clipboard?.writeText(logLines.join(String.fromCharCode(10)))}
-                  className="rounded-md border border-gray-200 bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-gray-500 shadow-sm transition-colors hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/80 dark:text-gray-300 dark:hover:bg-gray-800"
-                >
-                  Copy
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsBridgeLogVisible(false)}
-                  className="rounded-md border border-gray-200 bg-white/80 px-2 py-0.5 text-[10px] font-semibold text-gray-500 shadow-sm transition-colors hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900/80 dark:text-gray-300 dark:hover:bg-gray-800"
-                >
-                  Hide
-                </button>
-              </div>
-              <div className="max-h-56 space-y-0.5 overflow-auto scrollbar-hide">
-                {logLines.slice().reverse().map((line, idx) => (
-                  <div key={idx} className="truncate">{line}</div>
-                ))}
-              </div>
             </div>
           )}
           <AnimatePresence>
@@ -557,8 +487,8 @@ export default function App() {
                   void run(() => hostBridge.setUiLanguage(lang), 'set_lang', 2500);
                 }}
                 // Deliberately outside `run`: the bar calls this every frame
-                // while dragging, and `run` flips diagnostics state on each
-                // call, which would re-render the whole shell mid-gesture.
+                // while dragging, and `run` resyncs the whole shell after each
+                // call, which would re-render mid-gesture.
                 onResizeRatio={(ratio, commit) => {
                   void hostBridge.resizeToRatio(ratio, commit).catch(() => undefined);
                 }}
@@ -567,8 +497,8 @@ export default function App() {
                   void run(() => hostBridge.setInsideMode(nextInside), 'set_inside_mode', 2500);
                   if (nextInside) {
                     const hint = I18N[uiLang].insideModeHint.replace('{key}', snapshot.state.hotkeys.insideMode || 'P');
-                    setDiagMessage(hint);
-                    window.setTimeout(() => setDiagMessage(null), 2800);
+                    setToastMessage(hint);
+                    window.setTimeout(() => setToastMessage(null), 2800);
                   }
                 }}
                 isInsideMode={snapshot.state.inside}
