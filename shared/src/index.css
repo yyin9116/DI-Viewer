@@ -21,7 +21,15 @@
    * skeleton as Sarasa, so it keeps both scripts on one family.
    */
   --font-sans: "Sarasa Gothic SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
-  --font-mono: "Cascadia Mono", "Sarasa Mono SC", "Consolas", ui-monospace, monospace;
+  /*
+   * `Sarasa Mono SC` is named here but the font pack only registers
+   * "Sarasa Gothic SC" (400/600), so it never resolves. With nothing CJK-aware
+   * in the stack, Chrome answered Chinese from Consolas by falling all the way
+   * back to 宋体 — the address bar's `font-mono` placeholder came out as a thin,
+   * aliased Song face at 13px. Keep the mono faces for Latin and let Sarasa
+   * carry any Chinese that lands in a mono context.
+   */
+  --font-mono: "Cascadia Mono", "Sarasa Mono SC", "Consolas", ui-monospace, "Sarasa Gothic SC", monospace;
 
   /* Brand / interaction (teal) */
   --color-brand-300: #5eead4; /* dark-mode accent text */
@@ -155,6 +163,18 @@ body {
   input,
   select {
     font: inherit;
+  }
+
+  /*
+   * Nothing styled focus, so the shell fell back to Chromium's UA ring — a 2px
+   * `#101010` band plus a white halo. Around a teal pill that reads as a black
+   * frame, which is why the pinned button looked like a different, oversized
+   * control in screenshots. Keep the affordance (keyboard focus only), put it
+   * on the brand colour, and let the outline follow the element's own radius.
+   */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
   }
 }
 

@@ -204,7 +204,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                   value={inputUrl}
                   onChange={(e) => setInputUrl(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  className="flex-1 border-none bg-transparent font-mono text-[13px] text-slate-500 outline-none placeholder-slate-400 dark:text-slate-300"
+                  className="flex-1 border-none bg-transparent text-[13px] text-slate-500 outline-none placeholder-slate-400 dark:text-slate-300"
                   placeholder={t.placeholder}
                 />
               </div>

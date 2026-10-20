@@ -177,13 +177,19 @@ interface SidebarButtonProps {
 }
 
 function SidebarButton({ icon, label, onClick, active, size = 'md', dense = false }: SidebarButtonProps) {
+  // Dense mode trades `w-full` for a fixed 36px square so the whole rail fits a
+  // 1/3-height window — but every wrapper above is a plain block with `px-3`,
+  // so a fixed-width button sat on the padding edge (12..48) while the rail's
+  // centre is 40. The media card *did* centre, because it is a flex parent with
+  // `items-center`, so the cluster read as a column shoved 10px left. `mx-auto`
+  // puts the block-level button back on the rail's centreline in both modes.
   return (
     <button
       type="button"
       onClick={onClick}
       className={`
         relative group flex items-center justify-center rounded-xl transition-all duration-200 pointer-events-auto
-        ${dense ? 'h-9 w-9' : 'aspect-square w-full'}
+        ${dense ? 'mx-auto h-9 w-9' : 'aspect-square w-full'}
         ${active
           ? 'bg-teal-500 text-white shadow-md shadow-teal-500/20'
           : 'text-slate-600 hover:bg-black/5 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
