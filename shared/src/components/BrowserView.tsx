@@ -86,13 +86,25 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== 'Enter') return;
+    // Typing a word used to become `https://天气` - a host name that parses
+    // nowhere, so the tab ended up on the error page and the address bar looked
+    // dead. Anything that is not host-shaped is a search; the host applies the
+    // same rule, this copy keeps the two backends behaving identically.
     const typed = inputUrl.trim();
     if (!typed) return;
 
-    let finalUrl = typed;
-    if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://') && !finalUrl.startsWith('file://')) {
-      finalUrl = `https://${finalUrl}`;
-    }
+    const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(typed);
+    const looksLikeSearch =
+      /\s/.test(typed) ||
+      /[^\x00-\x7F]/.test(typed) ||
+      (!typed.includes('.') && !typed.includes(':') && !typed.includes('/'));
+
+    const finalUrl = hasScheme
+      ? typed
+      : looksLikeSearch
+        ? `https://www.bing.com/search?q=${encodeURIComponent(typed)}`
+        : `https://${typed}`;
+
     setLoadingTabId(tab.id);
     pulseRefreshing();
     onNavigate(finalUrl);

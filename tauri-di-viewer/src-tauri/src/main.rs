@@ -39,7 +39,15 @@ const LEGACY_HOME_URL_WWW: &str = "https://www.limestart.cn/";
 const LEGACY_HOME_URL_WWW_ALT: &str = "https://www.limestart.cn";
 const LOCAL_HOME_RESOURCE: &str = "lucid-start-page/index.html";
 const MAX_TAB_SESSIONS: usize = 20;
-const SNAP_DISTANCE: i32 = 10;
+/// How close to a monitor edge the window has to be released before it sticks.
+///
+/// 10px was measured from the *outer* rect, which already includes the 8px
+/// invisible resize border Windows puts around a chromeless window: a window
+/// that looks flush with the edge is still 8-10px away in those coordinates, so
+/// the old value only fired when the user actually pushed past the edge. 24px
+/// matches the feel of Aero Snap without grabbing a window that was parked
+/// "near" the edge on purpose.
+const SNAP_DISTANCE: i32 = 24;
 const SNAP_DEBOUNCE_MS: u64 = 180;
 const RESIZE_DEBOUNCE_MS: u64 = 250;
 /// Windows reports (-32000, -32000) for minimized/iconic windows; anything
@@ -373,6 +381,32 @@ fn is_legacy_home_url(url: &str) -> bool {
     false
 }
 
+/// Anything that is not shaped like a host name is a search, not a URL.
+///
+/// The address bar used to prefix `https://` unconditionally, so typing 天气
+/// produced `https://天气`: not a parseable host, so the tab landed on the
+/// browser's error page and the whole gesture read as "the address bar does
+/// nothing". A bare word has to go to the search engine instead.
+fn looks_like_search(trimmed: &str) -> bool {
+    if trimmed
+        .chars()
+        .any(|c| c.is_whitespace() || c == '\u{3000}')
+    {
+        return true;
+    }
+    if !trimmed.is_ascii() {
+        return true;
+    }
+    // No dot, no port, no path: a bare word, not a host.
+    !trimmed.contains('.') && !trimmed.contains(':') && !trimmed.contains('/')
+}
+
+const SEARCH_URL_PREFIX: &str = "https://www.bing.com/search?q=";
+
+fn encode_query(text: &str) -> String {
+    url::form_urlencoded::byte_serialize(text.as_bytes()).collect()
+}
+
 fn normalize_url_with_home(url: &str, home_url: &str) -> String {
     let trimmed = url.trim();
     if trimmed.is_empty() || trimmed == "about:blank" || is_legacy_home_url(trimmed) {
@@ -389,6 +423,8 @@ fn normalize_url_with_home(url: &str, home_url: &str) -> String {
         || trimmed.starts_with("file://")
     {
         trimmed.to_string()
+    } else if looks_like_search(trimmed) {
+        format!("{SEARCH_URL_PREFIX}{}", encode_query(trimmed))
     } else {
         format!("https://{trimmed}")
     }
@@ -1343,28 +1379,23 @@ fn snap_browser_to_edge(app: &AppHandle) -> AppResult<()> {
     let size = browser
         .outer_size()
         .map_err(|err| format!("Read size failed: {err}"))?;
-    let monitor_pos = monitor.position();
-    let monitor_size = monitor.size();
-    let monitor_left = monitor_pos.x;
-    let monitor_top = monitor_pos.y;
-    let monitor_right = monitor_pos.x + monitor_size.width as i32;
-    let monitor_bottom = monitor_pos.y + monitor_size.height as i32;
+    // Snap against the *work area*, not the raw monitor rect. With the taskbar
+    // showing, the two disagree by 48px at the bottom: snapping to the monitor
+    // rect puts the window behind the taskbar, which reads as "it did not
+    // stick" because the edge you can actually see is the taskbar's top.
+    let area = monitor.work_area();
+    let monitor_left = area.position.x;
+    let monitor_top = area.position.y;
+    let monitor_right = area.position.x + area.size.width as i32;
+    let monitor_bottom = area.position.y + area.size.height as i32;
 
     let mut x = position.x;
     let mut y = position.y;
     let width = size.width as i32;
     let height = size.height as i32;
 
-    if (x - monitor_left).abs() <= SNAP_DISTANCE {
-        x = monitor_left;
-    } else if (x + width - monitor_right).abs() <= SNAP_DISTANCE {
-        x = monitor_right - width;
-    }
-    if (y - monitor_top).abs() <= SNAP_DISTANCE {
-        y = monitor_top;
-    } else if (y + height - monitor_bottom).abs() <= SNAP_DISTANCE {
-        y = monitor_bottom - height;
-    }
+    x = snap_axis(x, width, monitor_left, monitor_right, SNAP_DISTANCE);
+    y = snap_axis(y, height, monitor_top, monitor_bottom, SNAP_DISTANCE);
 
     if x != position.x || y != position.y {
         browser
@@ -1373,6 +1404,26 @@ fn snap_browser_to_edge(app: &AppHandle) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+/// Snap one axis of the window onto a work-area edge.
+///
+/// "Near the edge" has to include *past* the edge. A chromeless window can be
+/// pushed until its far edge is already off-screen; the user sees the window cut
+/// off by the screen border and reads that as "it is at the edge", while an
+/// `abs(pos + len - end) <= dist` test is still false - the window is 500px out,
+/// not 24. That is why snapping felt dead exactly where it was most expected to
+/// fire. Anything at or beyond the edge counts as stuck to it.
+fn snap_axis(pos: i32, len: i32, start: i32, end: i32, dist: i32) -> i32 {
+    if pos <= start + dist {
+        return start;
+    }
+    if pos + len >= end - dist {
+        // A window wider than the work area has no flush position; pin it to
+        // the start edge rather than to a negative coordinate.
+        return (end - len).max(start);
+    }
+    pos
 }
 
 fn persist_browser_state(app: &AppHandle, do_snap: bool) -> AppResult<()> {
@@ -2245,6 +2296,51 @@ fn setup_tray(app: &AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+/// A saved window rect is only usable if a real block of it still lands on a
+/// monitor. `window_start_x/y` are written straight from wherever the drag
+/// ended, so one session spent half off-screen (or a monitor being unplugged)
+/// leaves the app opening somewhere the user cannot reach - and from then on
+/// every gesture feels dead, because the pointer keeps missing the chrome.
+fn visible_start_position(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) -> (f64, f64) {
+    let monitors = match app.available_monitors() {
+        Ok(list) if !list.is_empty() => list,
+        _ => return (x, y),
+    };
+    let scale = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|m| m.scale_factor())
+        .unwrap_or(1.0)
+        .max(0.01);
+    let rect_x = x * scale;
+    let rect_y = y * scale;
+    let rect_w = (w * scale).max(1.0);
+    let rect_h = (h * scale).max(1.0);
+    // Demand a meaningful overlap, not a 1px sliver: the user has to be able to
+    // see and grab the chromeless top-left corner.
+    let reachable = monitors.iter().any(|m| {
+        let area = m.work_area();
+        let ax = area.position.x as f64;
+        let ay = area.position.y as f64;
+        let ax2 = ax + area.size.width as f64;
+        let ay2 = ay + area.size.height as f64;
+        let overlap_x = (rect_x + rect_w).min(ax2) - rect_x.max(ax);
+        let overlap_y = (rect_y + rect_h).min(ay2) - rect_y.max(ay);
+        overlap_x >= 160.0 && overlap_y >= 120.0
+    });
+    if reachable {
+        return (x, y);
+    }
+    let centred = app.primary_monitor().ok().flatten().map(|m| {
+        let area = m.work_area();
+        let cx = area.position.x as f64 + (area.size.width as f64 - rect_w) / 2.0;
+        let cy = area.position.y as f64 + (area.size.height as f64 - rect_h) / 2.0;
+        (cx / scale, cy / scale)
+    });
+    centred.unwrap_or((x, y))
+}
+
 /// Create the one browsing window and put the active tab inside it.
 ///
 /// The window itself carries no page: every tab is a `Webview` child of it. That
@@ -2281,11 +2377,19 @@ fn create_browser_window(app: &AppHandle) -> AppResult<()> {
     };
     let ui_lang_zh = state.ui_lang_zh.load(Ordering::SeqCst);
 
+    let (start_x, start_y) = visible_start_position(
+        app,
+        initial.window_start_x,
+        initial.window_start_y,
+        initial.window_width,
+        initial.window_height,
+    );
+
     let window = WindowBuilder::new(app, BROWSER_LABEL)
         .title(ui_text(ui_lang_zh, "DI-Viewer Browser", "DI-Viewer Browser"))
         .inner_size(initial.window_width, initial.window_height)
         .min_inner_size(600.0, 320.0)
-        .position(initial.window_start_x, initial.window_start_y)
+        .position(start_x, start_y)
         .resizable(true)
         // Shown only after its first webview exists, otherwise the user sees an
         // empty frame for the time it takes the child to attach.
@@ -2317,6 +2421,11 @@ fn create_browser_window(app: &AppHandle) -> AppResult<()> {
         if let Ok(view) = tab_view(app, &active_label) {
             let _ = view.set_focus();
         }
+        // Apply the snap rule once on start-up. A saved rect that was flush
+        // against - or pushed past - a monitor edge never receives a Moved
+        // event, so nothing corrected it and every session opened half
+        // off-screen, which then made the whole chrome feel unreachable.
+        let _ = snap_browser_to_edge(app);
     }
     Ok(())
 }
@@ -3470,6 +3579,22 @@ mod tests {
             normalize_url_with_home("example.com/path", home),
             "https://example.com/path"
         );
+        // A bare word is a query, not a host: `https://天气` never parses and
+        // left the tab on the browser's error page.
+        assert_eq!(
+            normalize_url_with_home("天气", home),
+            "https://www.bing.com/search?q=%E5%A4%A9%E6%B0%94"
+        );
+        // Form encoding, so a space becomes `+` on the wire.
+        assert_eq!(
+            normalize_url_with_home("hello world", home),
+            "https://www.bing.com/search?q=hello+world"
+        );
+        // Anything with a dot, a port or a path still reads as a URL.
+        assert_eq!(
+            normalize_url_with_home("localhost:3000", home),
+            "https://localhost:3000"
+        );
     }
 
     /// The width bar publishes a frame every animation frame, so a started-at
@@ -3494,5 +3619,30 @@ mod tests {
         ));
         // A flag with no timestamp means the gesture never published a frame.
         assert!(!drag_flag_fresh(None, now));
+    }
+
+    /// Snapping has to fire for a window that was pushed *past* the edge, which
+    /// is the state a chromeless window actually ends up in: the user sees it
+    /// cut off by the screen border and expects it to stick, while a symmetric
+    /// "distance to the edge" test says it is 500px away.
+    #[test]
+    fn snapping_includes_positions_past_the_edge() {
+        let (left, right, len, d) = (0, 2560, 1186, 24);
+
+        // In range on either side.
+        assert_eq!(snap_axis(6, len, left, right, d), 0);
+        assert_eq!(snap_axis(1374, len, left, right, d), 1374);
+
+        // Pushed out: the near edge is negative, the far edge is beyond the
+        // monitor. Both have to come back flush.
+        assert_eq!(snap_axis(-40, len, left, right, d), 0);
+        assert_eq!(snap_axis(2118, len, left, right, d), right - len);
+
+        // Nowhere near an edge: never move the window.
+        assert_eq!(snap_axis(300, len, left, right, d), 300);
+
+        // Wider than the work area: pin to the start edge instead of a negative
+        // coordinate.
+        assert_eq!(snap_axis(900, 3000, left, right, d), 0);
     }
 }
