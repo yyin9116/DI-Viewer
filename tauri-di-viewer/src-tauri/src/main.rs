@@ -1164,6 +1164,34 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
   };
   registerFonts();
 
+  // Padding <html> is the only way to inset a page we do not own, but it has
+  // to be in place before the first layout - otherwise the page paints
+  // full-bleed and then jumps 80x88px when the inset finally lands, which is
+  // what made every navigation read as "it re-rendered into the embedded
+  // view". Measured here: <html> is created ~1ms after this script starts but
+  // DOMContentLoaded - the earliest point the old code could touch it - only
+  // fires ~500ms in, and everything parsed in between laid out at 0/0.
+  //
+  // documentElement does not exist yet, but the *document* does, and a
+  // constructable stylesheet attached to it applies the instant <html> is
+  // created. Inline `padding: ... !important` (set below, and by React on
+  // collapse) still wins over this, so it is only ever the first-frame floor.
+  const installFirstFrameInset = () => {
+    const css =
+      'html{padding-top:' + __CHROME_H__ + 'px!important;' +
+      'padding-left:' + __SIDEBAR_W__ + 'px!important;' +
+      'box-sizing:border-box!important;}';
+    try {
+      if (!document.adoptedStyleSheets) return false;
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      document.adoptedStyleSheets = [sheet];
+      return true;
+    } catch (_e) {
+      return false;
+    }
+  };
+
   const applyPageInset = () => {
     const de = document.documentElement;
     if (!de) return;
@@ -1240,17 +1268,40 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     }
 
     if (!window.__DIVIEWER_SHARED_BOOTSTRAPPED__) {
-      window.__DIVIEWER_SHARED_BOOTSTRAPPED__ = true;
+      // Set the flag only after the bundle ran: if a very early mount throws,
+      // the retry at DOMContentLoaded has to be allowed to try again, or the
+      // shell stays missing for the life of the tab.
       __DIVIEWER_JS__
+      window.__DIVIEWER_SHARED_BOOTSTRAPPED__ = true;
     }
 
     window.dispatchEvent(new CustomEvent('diviewer:sync'));
   };
 
-  if (document.documentElement) {
-    setupShellDom();
-  } else {
-    document.addEventListener('DOMContentLoaded', () => setupShellDom(), { once: true });
+  installFirstFrameInset();
+
+  // Mount as soon as <html> exists instead of waiting for DOMContentLoaded.
+  // Everything the shell needs (host, shadow root, chrome placeholders, React)
+  // lives inside the shadow root and none of it requires <body>, so there is
+  // no reason to sit out the whole parse. If an early mount throws, the flag
+  // is left unset and DOMContentLoaded retries.
+  let shellBooted = false;
+  const bootShell = () => {
+    if (shellBooted || !document.documentElement) return false;
+    try {
+      setupShellDom();
+      shellBooted = true;
+    } catch (_e) {
+      return false;
+    }
+    return true;
+  };
+  if (!bootShell()) {
+    const rootWatch = new MutationObserver(() => {
+      if (bootShell()) rootWatch.disconnect();
+    });
+    rootWatch.observe(document, { childList: true });
+    document.addEventListener('DOMContentLoaded', () => bootShell(), { once: true });
   }
   // Late stylesheets (and SPAs that rewrite <head>) can drop our inset rule;
   // re-append it once the document settled.
