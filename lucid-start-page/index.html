@@ -172,7 +172,12 @@
       min-height: clamp(96px, 20vh, 210px);
       display: flex;
       flex-direction: column;
+      /* `center` alone left the block optically high: the time is set with
+         line-height below 1, so its glyphs overflow the line box upward while
+         the date hangs off the bottom. Centring the *pair* and letting the
+         small gap carry the rhythm keeps the card balanced at every size. */
       justify-content: center;
+      gap: 6px;
     }
 
     .greet {
@@ -198,10 +203,24 @@
     }
 
     .time {
-      /* Design token: 44-78px Georgia. The old 54px floor overflowed the clock
-         card as soon as the window got short. */
-      font: clamp(44px, 8vw, 78px)/0.95 Georgia, serif;
-      letter-spacing: -0.04em;
+      /*
+       * Not Georgia. Georgia ships *old-style* figures: 1 and 5 sit on the
+       * x-height, 3/4/5/7/9 descend, 6/8 ascend. At 11px that is charming; at
+       * 70px it reads as four digits cut out of different sizes, with a colon
+       * dropped below the baseline - which is what "the clock looks off"
+       * actually was. The UI face carries lining, tabular figures, so the
+       * digits share one height and one advance width and the block stays a
+       * rectangle as the minutes tick over.
+       * Weight 500 rather than 400: at this size the hairlines of a lighter
+       * cut disappear against the card in dark mode.
+       */
+      font-family: "Sarasa Gothic SC", "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+      font-size: clamp(42px, 7.6vw, 76px);
+      font-weight: 500;
+      line-height: 1;
+      letter-spacing: -0.045em;
+      font-variant-numeric: lining-nums tabular-nums;
+      font-feature-settings: "lnum" 1, "tnum" 1;
     }
 
     .sub,
@@ -435,6 +454,18 @@
 
     .links {
       grid-column: span 8;
+      /*
+       * Bounded height, so the favourites can never push the page. Before this
+       * the card grew a row per five links and the page's height was whatever
+       * the tile count happened to be: the three max-height media queries below
+       * exist purely to hand-tune row counts for specific window presets, and
+       * one extra bookmark still broke them. Now rows past the cap scroll
+       * inside the card instead of moving the layout.
+       */
+      display: flex;
+      flex-direction: column;
+      max-height: clamp(210px, 47vh, 430px);
+      min-height: 0;
     }
 
     .recent {
@@ -600,12 +631,51 @@
 
     .grid {
       display: grid;
+      /* Scrolls inside the card (see `.links`); a visible thumb is the whole
+         point - the page hides its own scrollbars, so a clipped row with no
+         thumb reads as a rendering bug. */
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 4px;
+      padding-bottom: 2px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(120, 113, 108, 0.35) transparent;
       /* Five columns, not four: the default set is eight favourites plus the
          "add" tile, which made four columns spill a third row whose only
          occupant was the add tile — that row is what got clipped at the bottom
          of a 760px window. Five columns render as 5 + 4 and fit. */
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 16px;
+    }
+
+    /*
+     * A row that ends mid-tile reads as "clipped", not as "scrollable". Fading
+     * the last 26px is the cheapest way to say there is more without adding a
+     * control; it is only applied while the grid actually overflows and the
+     * user is not already at the bottom, so a card that fits gets no fade at
+     * all. `syncGridOverflow()` owns both classes.
+     */
+    .links .grid.is-scrollable {
+      padding-bottom: 12px;
+    }
+
+    .links .grid.is-scrollable:not(.at-end) {
+      -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+      mask-image: linear-gradient(to bottom, #000 calc(100% - 26px), transparent 100%);
+    }
+
+    .grid::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .grid::-webkit-scrollbar-thumb {
+      border-radius: 999px;
+      background: rgba(120, 113, 108, 0.35);
+    }
+
+    .dark .grid::-webkit-scrollbar-thumb {
+      background: rgba(214, 211, 209, 0.28);
     }
 
     .item,
@@ -2122,11 +2192,38 @@
       }
     });
 
+    /*
+     * The favourites grid is the one region of this page that can scroll, and
+     * the page itself hides its scrollbars, so a clipped row had no visual
+     * signal telling it apart from a layout bug. These two classes drive the
+     * fade in the stylesheet above; a MutationObserver covers every path that
+     * re-renders the tiles (add, delete, drag-reorder, host sync) without
+     * threading a call through all of them.
+     */
+    function syncGridOverflow() {
+      const grid = document.getElementById('grid');
+      if (!grid) return;
+      const overflows = grid.scrollHeight - grid.clientHeight > 2;
+      grid.classList.toggle('is-scrollable', overflows);
+      const atEnd = !overflows || grid.scrollTop + grid.clientHeight >= grid.scrollHeight - 2;
+      grid.classList.toggle('at-end', atEnd);
+    }
+
+    function watchGridOverflow() {
+      syncGridOverflow();
+      const grid = document.getElementById('grid');
+      if (!grid) return;
+      new MutationObserver(syncGridOverflow).observe(grid, { childList: true });
+      grid.addEventListener('scroll', syncGridOverflow, { passive: true });
+      window.addEventListener('resize', syncGridOverflow);
+    }
+
     (async () => {
       await loadState();
       renderLinks();
       renderRecentItems();
       renderThemeToggle();
+      watchGridOverflow();
       updateClock();
       setInterval(updateClock, 1000);
       setInterval(bindShellObserver, 600);
