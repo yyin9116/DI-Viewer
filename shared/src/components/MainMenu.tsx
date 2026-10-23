@@ -20,7 +20,8 @@ import {
   Check,
   Home,
   Monitor,
-  Magnet
+  Magnet,
+  Frame
 } from 'lucide-react';
 import type { HotkeyConfig, ThemeMode } from '../types';
 import { bindingHasModifier, bindingIsTypingSafe } from '../lib/inAppHotkeys';
@@ -53,6 +54,8 @@ interface MainMenuProps {
   isPositionLocked: boolean;
   snapEnabled: boolean;
   onToggleSnap: () => void;
+  borderless: boolean;
+  onToggleBorderless: (enabled: boolean) => void;
   isPinned: boolean;
   onTogglePin: () => void;
   isSidebarVisible: boolean;
@@ -109,6 +112,8 @@ const TEXT = {
     // rendered separately by `shortcut` rather than baked into this string.
     insideHint: '鼠标事件交给下层页面',
     exitWith: '退出',
+    borderless: '无边框',
+    borderlessHint: '隐藏系统标题栏与边框，拖动顶部条移动窗口',
     positionLock: '锁定位置',
     positionLockHint: '禁止拖动窗口',
     snap: '贴边吸附',
@@ -188,6 +193,8 @@ const TEXT = {
     insideMode: 'Click-through',
     insideHint: 'Mouse events go to the page below',
     exitWith: 'exit',
+    borderless: 'Frameless',
+    borderlessHint: 'No title bar or border; drag the top strip to move',
     positionLock: 'Lock position',
     positionLockHint: 'Dragging is disabled',
     snap: 'Snap to edges',
@@ -241,6 +248,7 @@ const hotkeyKeys: Array<keyof HotkeyConfig> = [
   'toggleRecording',
   'toggleShowHide',
   'insideMode',
+  'immersiveMode',
   'videoBackward',
   'videoForward',
   'decreaseOpacity',
@@ -255,6 +263,7 @@ const HOTKEY_LABELS: Record<UILang, Record<keyof HotkeyConfig, string>> = {
     toggleRecording: '开始 / 停止录制',
     toggleShowHide: '显示 / 隐藏窗口',
     insideMode: '点击穿透',
+    immersiveMode: '一键沉浸（无边框＋收栏＋穿透＋置顶＋锁位）',
     videoBackward: '后退 5 秒',
     videoForward: '前进 5 秒',
     decreaseOpacity: '降低透明度',
@@ -267,6 +276,7 @@ const HOTKEY_LABELS: Record<UILang, Record<keyof HotkeyConfig, string>> = {
     toggleRecording: 'Start / stop recording',
     toggleShowHide: 'Show / hide window',
     insideMode: 'Click-through',
+    immersiveMode: 'Immersive (frameless + chrome off + click-through + on top + locked)',
     videoBackward: 'Back 5 seconds',
     videoForward: 'Forward 5 seconds',
     decreaseOpacity: 'Decrease opacity',
@@ -320,7 +330,15 @@ function composeHotkey(event: React.KeyboardEvent<HTMLInputElement>): string | n
 
 /** Bindings that must keep working while another app is focused (or while the
  *  window is hidden / click-through), so they cannot be modifier-less. */
-const GLOBAL_REQUIRED: Array<keyof HotkeyConfig> = ['toggleShowHide', 'insideMode', 'closeWindow'];
+const GLOBAL_REQUIRED: Array<keyof HotkeyConfig> = [
+  'toggleShowHide',
+  'insideMode',
+  'closeWindow',
+  // Immersive mode turns click-through on as part of the set, so the only way
+  // out of it is this key. A modifier-less binding would be unreachable the
+  // moment the window stops accepting the cursor.
+  'immersiveMode'
+];
 
 /** Render `Ctrl+Alt+R` as three discrete keycaps. */
 function ComboKeys({ combo }: { combo: string }) {
@@ -370,6 +388,8 @@ export function MainMenu({
   isPositionLocked,
   snapEnabled,
   onToggleSnap,
+  borderless,
+  onToggleBorderless,
   isPinned,
   onTogglePin,
   isSidebarVisible,
@@ -798,6 +818,13 @@ export function MainMenu({
                   shortcut={hotkeysEnabled ? hotkeys.insideMode : RESCUE_HOTKEY}
                   checked={isInsideMode}
                   onChange={onToggleInsideMode}
+                />
+                <SwitchRow
+                  icon={<Frame size={15} />}
+                  label={t.borderless}
+                  hint={t.borderlessHint}
+                  checked={borderless}
+                  onChange={() => onToggleBorderless(!borderless)}
                 />
                 <SwitchRow
                   icon={<Lock size={15} />}

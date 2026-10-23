@@ -28,6 +28,13 @@ interface BrowserViewProps {
   chrome: ChromeMetrics;
   /** Effective home address (built-in page or a user-chosen one). */
   startPageUrl: string;
+  /**
+   * Frameless window. Decorated, Windows drags the window by its title bar;
+   * frameless there is no title bar, so the chrome bar itself has to hand
+   * presses to the OS or the window cannot be moved at all.
+   */
+  borderless: boolean;
+  onStartDrag: () => void;
 }
 
 const TEXT = {
@@ -92,7 +99,7 @@ function getFaviconUrl(url: string, startPageUrl?: string): string | null {
   }
 }
 
-export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, onTabAdd, isSidebarOpen, onTabsReorder, onNavigateHistory, onRefresh, lang, compact, chrome, startPageUrl }: BrowserViewProps) {
+export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, onTabAdd, isSidebarOpen, onTabsReorder, onNavigateHistory, onRefresh, lang, compact, chrome, startPageUrl, borderless, onStartDrag }: BrowserViewProps) {
   const [inputUrl, setInputUrl] = useState('');
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -149,6 +156,22 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
     onRefresh();
   };
 
+  /**
+   * Frameless window: the chrome bar stands in for the title bar.
+   *
+   * Only presses on the bar's own surface are forwarded — a press that starts
+   * on a button, the address input or a tab belongs to that control, and a tab
+   * drag has to stay a tab reorder. Everything else starts a native window
+   * drag, which is the only way to move a window that has no title bar.
+   */
+  const handleBarMouseDown = (event: React.MouseEvent<HTMLElement>) => {
+    if (!borderless || event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('button, input, a, textarea, select, [data-no-drag]')) return;
+    event.preventDefault();
+    onStartDrag();
+  };
+
   return (
     <div className="relative flex flex-1 flex-col overflow-hidden bg-transparent pointer-events-none" style={chromeStyle}>
       <AnimatePresence initial={false}>
@@ -162,7 +185,10 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
           >
             {/* No opaque backdrop: the bar's own children carry the surface, so
                 collapsing (or expanding) can never leave a white strip behind. */}
-            <div className={`chrome-surface pointer-events-auto relative z-20 flex h-[var(--chrome-toolbar)] shrink-0 items-center border-b border-chrome-line bg-chrome shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-colors duration-300 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ${compact ? 'gap-2 px-2.5' : 'gap-4 px-4'}`}>
+            <div
+              onMouseDown={handleBarMouseDown}
+              className={`chrome-surface pointer-events-auto relative z-20 flex h-[var(--chrome-toolbar)] shrink-0 items-center border-b border-chrome-line bg-chrome shadow-[inset_0_1px_0_rgba(255,255,255,0.9)] transition-colors duration-300 dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] ${compact ? 'gap-2 px-2.5' : 'gap-4 px-4'}`}
+            >
               <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
                 <div className="relative flex items-center group">
                   <button
@@ -272,6 +298,7 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
               axis="x"
               values={tabs}
               onReorder={onTabsReorder}
+              onMouseDown={handleBarMouseDown}
               className="pointer-events-auto relative z-20 flex h-[var(--chrome-strip)] shrink-0 items-center gap-[3px] overflow-x-auto border-b border-chrome-line bg-chrome-strip px-1.5 transition-colors duration-300 scrollbar-hide"
             >
               {tabs.map((tTab) => {
@@ -283,19 +310,27 @@ export function BrowserView({ tab, tabs, onNavigate, onTabSelect, onTabClose, on
                   <Reorder.Item
                     key={tTab.id}
                     value={tTab}
+                    data-no-drag
                     onClick={() => {
                       // Switching is a show/hide of a live webview now, not a
                       // navigation: no spinner, no reload, state is preserved.
                       onTabSelect(tTab.id);
                     }}
-                    className={`group flex h-[var(--chrome-tab-h)] cursor-pointer select-none items-center gap-1.5 rounded-[7px] text-[length:var(--chrome-label)] transition-colors ${
+                    className={`group flex h-[var(--chrome-tab-h)] cursor-pointer select-none items-center gap-1.5 rounded-[7px] border text-[length:var(--chrome-label)] transition-colors ${
                       compact
                         ? 'min-w-[calc(var(--chrome-tab-min)_-_8px)] max-w-[calc(var(--chrome-tab-max)_-_24px)] px-1.5'
                         : 'min-w-[var(--chrome-tab-min)] max-w-[var(--chrome-tab-max)] px-2'
                     } ${
+                      // Flat, like the strip's own rules: one hairline in the
+                      // same colour as every other chrome border, no ring, no
+                      // drop shadow. The pill used to carry a 1px ring plus a
+                      // 1px shadow, which read as a raised keycap against a
+                      // flat toolbar. Every tab carries a transparent border
+                      // so colouring it on activation cannot shift the content
+                      // by a pixel.
                       tTab.id === tab.id
-                        ? 'bg-tab-active font-medium text-slate-900 shadow-[0_0_0_1px_var(--color-tab-active-line),0_1px_1px_rgba(15,23,42,0.06)] dark:text-white'
-                        : 'font-normal text-tab-idle hover:bg-black/[0.045] dark:hover:bg-white/[0.06]'
+                        ? 'border-chrome-line bg-tab-active font-medium text-slate-900 dark:text-white'
+                        : 'border-transparent font-normal text-tab-idle hover:bg-black/[0.045] dark:hover:bg-white/[0.06]'
                     }`}
                   >
                     {isLoading ? (

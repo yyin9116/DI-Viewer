@@ -29,6 +29,8 @@ const defaultState: FrontendState = {
   maximized: false,
   positionLocked: false,
   snapEnabled: true,
+  borderless: false,
+  immersive: false,
   hotkeysEnabled: true,
   sidebarVisible: true,
   uiLang: 'zh',
@@ -38,6 +40,7 @@ const defaultState: FrontendState = {
     toggleRecording: 'R',
     toggleShowHide: 'Ctrl+Alt+H',
     insideMode: 'Ctrl+Alt+P',
+    immersiveMode: 'Ctrl+Alt+I',
     videoBackward: '5',
     videoForward: '6',
     decreaseOpacity: '7',
@@ -604,6 +607,8 @@ export default function App() {
               compact={compact}
               chrome={chrome}
               startPageUrl={snapshot.state.startPageUrl}
+              borderless={snapshot.state.borderless}
+              onStartDrag={() => void run(() => hostBridge.startDragging(), 'start_dragging', 3000)}
             />
           </div>
           <AnimatePresence>
@@ -677,6 +682,8 @@ export default function App() {
                 isPositionLocked={snapshot.state.positionLocked}
                 snapEnabled={snapshot.state.snapEnabled}
                 onToggleSnap={() => void run(() => hostBridge.setSnapEnabled(!snapshot.state.snapEnabled), 'set_snap_enabled', 2500)}
+                borderless={snapshot.state.borderless}
+                onToggleBorderless={(enabled) => void run(() => hostBridge.setBorderless(enabled), 'set_borderless', 2500)}
                 onAbout={() => void run(() => hostBridge.openExternal(GITHUB_REPO_URL), 'open_about', 3000)}
                 isPinned={snapshot.state.onTop}
                 onTogglePin={() => void run(() => hostBridge.toggleOnTop(), 'toggle_on_top', 2500)}

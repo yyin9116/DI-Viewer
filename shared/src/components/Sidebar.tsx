@@ -77,6 +77,81 @@ const TEXT = {
 
 export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, isBookmarked, onSettingsClick, isPinned, onTogglePin, isOpen, onToggle, onFullscreenClick, onMediaAction, lang, dense, railWidth }: SidebarProps) {
   const t = TEXT[lang];
+
+  /*
+   * The collapsed grip retracts on its own.
+   *
+   * It sits dead centre on the left edge, which is exactly where a video's
+   * playback controls and subtitles live, so keeping it on screen forever meant
+   * a glowing capsule parked over the picture. It now retracts into the edge
+   * once the pointer is not near it, and comes back only when the pointer
+   * approaches the left edge — the same reflex as an auto-hiding cursor.
+   *
+   * Position drives it, a timer only delays the retreat: "the pointer is near
+   * the edge" shows it, "the pointer is anywhere else" retracts it shortly
+   * after. Deliberately *not* a global idle timer that keeps it alive on every
+   * mouse move — that made the grip linger for seconds while you were dragging
+   * the pointer around the middle of the page, which is the worst case.
+   */
+  const EDGE_ZONE = 26;
+  /* First appearance after collapsing the rail: long enough to be noticed and
+   * to teach where it lives, short enough not to sit over the video. */
+  const REVEAL_MS = 2600;
+  /* Once the pointer walks away from the edge, retract almost immediately.
+   * The delay only exists so a diagonal swipe through the corner does not
+   * strobe the capsule in and out. */
+  const RETREAT_MS = 700;
+  const [handleHidden, setHandleHidden] = React.useState(false);
+  /* Mirrors handleHidden so the listeners can read it without re-subscribing
+   * on every state change (which would also reset the pending timer). */
+  const hiddenRef = React.useRef(false);
+  const hideTimer = React.useRef<number | undefined>(undefined);
+
+  React.useEffect(() => {
+    const setHidden = (next: boolean) => {
+      hiddenRef.current = next;
+      setHandleHidden(next);
+    };
+    const cancel = () => window.clearTimeout(hideTimer.current);
+    const retreatIn = (ms: number) => {
+      cancel();
+      hideTimer.current = window.setTimeout(() => setHidden(true), ms);
+    };
+
+    if (isOpen) {
+      // The rail is open, so the grip is off screen by definition. Coming back
+      // out of an open rail must show it again rather than start retracted.
+      cancel();
+      setHidden(false);
+      return;
+    }
+
+    const onMove = (event: MouseEvent) => {
+      if (event.clientX <= EDGE_ZONE) {
+        cancel();
+        if (hiddenRef.current) setHidden(false);
+        return;
+      }
+      // Moving around the page body is not a reason to keep the grip up.
+      if (!hiddenRef.current) retreatIn(RETREAT_MS);
+    };
+    // Pointer leaving the window entirely: tuck it away, keep it reachable.
+    const onLeave = () => retreatIn(RETREAT_MS);
+
+    retreatIn(REVEAL_MS);
+    document.addEventListener('mousemove', onMove, { passive: true });
+    document.addEventListener('mouseleave', onLeave, { passive: true });
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseleave', onLeave);
+      cancel();
+    };
+  }, [isOpen]);
+
+  const handleVisible = !isOpen && !handleHidden;
+  // Retracting 28px clears the 8px of glow around a 6px grip; anything less
+  // leaves a blue smear on the page edge that is more distracting than the grip.
+  const handleRestX = -28;
   // Icons ride along with the rail: 22px on the 80px rail it was tuned for,
   // and proportionally smaller below that. Rounded so the SVG box stays on a
   // whole pixel and 1x renders stay crisp.
@@ -88,11 +163,11 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
         type="button"
         initial={false}
         animate={{
-          opacity: isOpen ? 0 : 1,
-          x: isOpen ? -20 : 0,
+          opacity: handleVisible ? 1 : 0,
+          x: handleVisible ? 0 : handleRestX,
           scale: 1
         }}
-        transition={{ duration: 0.2 }}
+        transition={{ duration: 0.26 }}
         /* Centred by `top-0 bottom-0 my-auto` rather than by an offset: with
            both edges pinned and auto block margins, the box centres itself at
            whatever height it has. The previous `top: 50dvh` + `-translate-y-1/2`
@@ -101,8 +176,10 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
            *from* the midline and sat 48px low; a hard-coded
            `calc(50dvh - 3rem)` would have fixed that but re-breaks the centring
            every time the handle's length changes. */
-        className={`fixed left-2 top-0 bottom-0 my-auto z-[2147483647] flex h-28 w-8 items-center justify-center group ${isOpen ? 'pointer-events-none' : 'pointer-events-auto cursor-pointer'}`}
+        className={`fixed left-2 top-0 bottom-0 my-auto z-[2147483647] flex h-28 w-8 items-center justify-center group ${handleVisible ? 'pointer-events-auto cursor-pointer' : 'pointer-events-none'}`}
         data-tone={isDarkMode ? 'dark' : 'light'}
+        aria-hidden={!handleVisible}
+        tabIndex={handleVisible ? 0 : -1}
         onClick={onToggle}
         title={t.expand}
       >

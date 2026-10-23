@@ -31,7 +31,8 @@ const defaultHotkeys: HotkeyConfig = {
   decreaseOpacity: '7',
   increaseOpacity: '8',
   requestFullScreen: 'O',
-  closeWindow: 'Ctrl+Q'
+  closeWindow: 'Ctrl+Q',
+  immersiveMode: 'Ctrl+Alt+I'
 };
 
 const defaultState: FrontendState = {
@@ -43,6 +44,8 @@ const defaultState: FrontendState = {
   maximized: false,
   positionLocked: false,
   snapEnabled: true,
+  borderless: false,
+  immersive: false,
   hotkeysEnabled: true,
   sidebarVisible: true,
   uiLang: 'zh',
@@ -95,6 +98,8 @@ function normalizeState(raw: unknown): FrontendState {
     // Absent means an older host build that always snapped, so `true` is the
     // value that reproduces its behaviour rather than silently changing it.
     snapEnabled: Boolean(state.snapEnabled ?? state.snap_enabled ?? true),
+    borderless: Boolean(state.borderless ?? false),
+    immersive: Boolean(state.immersive ?? false),
     hotkeysEnabled: Boolean(state.hotkeysEnabled ?? state.hotkeys_enabled ?? true),
     sidebarVisible: Boolean(state.sidebarVisible ?? state.sidebar_visible ?? true),
     uiLang: String(state.uiLang ?? state.ui_lang ?? 'zh'),
@@ -449,6 +454,24 @@ export const hostBridge = {
   },
   setSnapEnabled(enabled: boolean) {
     return callBridge<boolean>('set_snap_enabled', enabled);
+  },
+  /** Frameless window on/off. Returns the value the host actually applied. */
+  setBorderless(enabled: boolean) {
+    return callBridge<boolean>('set_borderless', enabled);
+  },
+  /** One key for frameless + chrome-off + click-through + on-top + locked. */
+  toggleImmersive() {
+    return callBridge<boolean>('toggle_immersive');
+  },
+  /**
+   * Hand a pointer gesture to the OS so it drags the window.
+   *
+   * Only meaningful without decorations: a decorated window is dragged by its
+   * title bar, a frameless one has none, so the shell's own strip becomes the
+   * handle.
+   */
+  startDragging() {
+    return callBridge('start_dragging');
   },
   toggleSidebar() {
     return callBridge('toggle_sidebar');

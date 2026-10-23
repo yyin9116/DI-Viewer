@@ -46,6 +46,16 @@ pub(crate) struct HotkeyConfig {
     pub(crate) increase_opacity: String,
     pub(crate) request_full_screen: String,
     pub(crate) close_window: String,
+    /// One key that flips the whole "just watch the thing" set of states at
+    /// once. Missing from every file written before it existed, so it carries
+    /// its own default instead of failing the whole deserialisation and
+    /// resetting the user's other bindings.
+    #[serde(default = "default_immersive_binding")]
+    pub(crate) immersive_mode: String,
+}
+
+pub(crate) fn default_immersive_binding() -> String {
+    "Ctrl+Alt+I".to_string()
 }
 
 impl Default for HotkeyConfig {
@@ -70,6 +80,7 @@ impl Default for HotkeyConfig {
             increase_opacity: "8".to_string(),
             request_full_screen: "O".to_string(),
             close_window: "Ctrl+Q".to_string(),
+            immersive_mode: default_immersive_binding(),
         }
     }
 }
@@ -91,6 +102,9 @@ fn v2_defaults() -> HotkeyConfig {
         increase_opacity: "Ctrl+Alt+0".to_string(),
         request_full_screen: "Ctrl+Alt+F".to_string(),
         close_window: "Ctrl+Q".to_string(),
+        // Did not exist in 1.1.21, so there is no "old value" to recognise;
+        // whatever the file holds is what the migration leaves alone.
+        immersive_mode: default_immersive_binding(),
     }
 }
 
@@ -151,6 +165,7 @@ impl HotkeyConfig {
         self.increase_opacity = promote(self.increase_opacity);
         self.request_full_screen = promote(self.request_full_screen);
         self.close_window = promote(self.close_window);
+        self.immersive_mode = promote(self.immersive_mode);
         self.schema_version = 2;
         self
     }
@@ -226,6 +241,11 @@ impl HotkeyConfig {
             [&old_v2.close_window, &old_v1.close_window],
             &new.close_window,
         );
+        restore(
+            &mut self.immersive_mode,
+            [&old_v2.immersive_mode, &old_v1.immersive_mode],
+            &new.immersive_mode,
+        );
         self.schema_version = PERSISTENCE_SCHEMA_VERSION;
         self
     }
@@ -246,6 +266,7 @@ fn v1_promoted_defaults() -> HotkeyConfig {
         increase_opacity: "Ctrl+Alt+8".to_string(),
         request_full_screen: "Ctrl+Alt+O".to_string(),
         close_window: "Ctrl+Q".to_string(),
+        immersive_mode: default_immersive_binding(),
     }
 }
 
@@ -267,6 +288,7 @@ impl HotkeyConfig {
                 &default.request_full_screen,
             ),
             close_window: normalize_hotkey(self.close_window, &default.close_window),
+            immersive_mode: normalize_hotkey(self.immersive_mode, &default.immersive_mode),
         }
     }
 }
@@ -276,6 +298,26 @@ impl HotkeyConfig {
 pub(crate) struct BookmarkItem {
     pub(crate) title: String,
     pub(crate) url: String,
+}
+
+/// The five states "immersive mode" overrides, captured on the way in so that
+/// leaving it puts the window back exactly as it was rather than at some
+/// guessed default.
+///
+/// Persisted, not just held in memory: the mode writes its own values into the
+/// same persisted fields any other switch writes (`inside`, `on_top`, locked,
+/// sidebar, borderless). If the app were killed while immersive, the next
+/// launch would come up borderless, click-through and position-locked — an
+/// unreachable window with no grip to grab. `immersive_restore` being `Some` at
+/// startup is the signal to unwind it before the window is ever shown.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ImmersiveSnapshot {
+    pub(crate) borderless: bool,
+    pub(crate) sidebar_visible: bool,
+    pub(crate) inside: bool,
+    pub(crate) on_top: bool,
+    pub(crate) position_locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -299,6 +341,15 @@ pub(crate) struct PersistedState {
     /// an existing history file keeps its behaviour.
     #[serde(default = "default_true")]
     pub(crate) window_snap_enabled: bool,
+    /// Frameless window: no system title bar, no resize border. Off by
+    /// default, because a frameless window also has no title bar to drag by —
+    /// the shell has to provide one, and that is a deliberate choice rather
+    /// than a surprise on first launch.
+    #[serde(default)]
+    pub(crate) window_borderless: bool,
+    /// `Some` while immersive mode is on. See `ImmersiveSnapshot`.
+    #[serde(default)]
+    pub(crate) immersive_restore: Option<ImmersiveSnapshot>,
     /// Master switch for the user-configurable global shortcuts. The fixed
     /// rescue shortcut stays registered either way.
     #[serde(default = "default_true")]
@@ -348,6 +399,8 @@ impl Default for PersistedState {
             window_maximized: false,
             window_position_locked: false,
             window_snap_enabled: true,
+            window_borderless: false,
+            immersive_restore: None,
             hotkeys_enabled: true,
             bookmarks: Vec::new(),
             tab_urls: vec![LEGACY_HOME_URL.to_string()],
@@ -540,17 +593,47 @@ mod tests {
             increase_opacity: "8".to_string(),
             request_full_screen: "o".to_string(),
             close_window: "ctrl+q".to_string(),
+            immersive_mode: "i".to_string(),
         }
         .sanitize();
 
         assert_eq!(config.schema_version, PERSISTENCE_SCHEMA_VERSION);
         assert_eq!(config.toggle_play_pause, "Backquote");
+        assert_eq!(config.immersive_mode, "I");
         assert_eq!(config.toggle_recording, "R");
         assert_eq!(config.toggle_show_hide, "Ctrl+0");
         assert_eq!(config.inside_mode, HotkeyConfig::default().inside_mode);
         assert_eq!(config.video_backward, "ArrowLeft");
         assert_eq!(config.video_forward, "ArrowRight");
         assert_eq!(config.close_window, "Ctrl+Q");
+    }
+
+    #[test]
+    fn hotkey_file_without_immersive_mode_keeps_other_bindings() {
+        // A hotkeys.json written by 1.1.22 has no `immersiveMode` key. The new
+        // field must fill itself in rather than fail deserialisation: a failure
+        // takes the `read_json_or_default` path, which silently discards every
+        // binding the user had customised.
+        let legacy = r#"{
+            "schemaVersion": 3,
+            "togglePlayPause": "F8",
+            "toggleRecording": "Ctrl+Shift+M",
+            "toggleShowHide": "Ctrl+Alt+H",
+            "insideMode": "Ctrl+Alt+P",
+            "videoBackward": "5",
+            "videoForward": "6",
+            "decreaseOpacity": "7",
+            "increaseOpacity": "8",
+            "requestFullScreen": "O",
+            "closeWindow": "Ctrl+Q"
+        }"#;
+        let config: HotkeyConfig =
+            serde_json::from_str(legacy).expect("a file without immersiveMode must still load");
+
+        assert_eq!(config.toggle_play_pause, "F8");
+        assert_eq!(config.toggle_recording, "Ctrl+Shift+M");
+        assert_eq!(config.immersive_mode, default_immersive_binding());
+        assert!(binding_is_global(&config.immersive_mode));
     }
 
     #[test]
@@ -569,6 +652,7 @@ mod tests {
             increase_opacity: "8".to_string(),
             request_full_screen: "O".to_string(),
             close_window: "Ctrl+Q".to_string(),
+            immersive_mode: "I".to_string(),
         }
         .migrate_typing_safe()
         .sanitize();
@@ -601,6 +685,7 @@ mod tests {
             increase_opacity: "8".to_string(),
             request_full_screen: "O".to_string(),
             close_window: "Ctrl+Q".to_string(),
+            immersive_mode: "I".to_string(),
         }
         .migrate_typing_safe()
         .migrate_scoped()

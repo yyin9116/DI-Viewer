@@ -4,7 +4,7 @@ mod persistence;
 
 use persistence::{
     binding_is_global, current_timestamp_ms, read_json_or_default, write_json, BookmarkItem,
-    HotkeyConfig, PersistedState,
+    HotkeyConfig, ImmersiveSnapshot, PersistedState,
 };
 use serde::Serialize;
 use std::{
@@ -216,6 +216,12 @@ struct FrontendState {
     /// there. Exposed so the settings switch reflects the saved value instead of
     /// always starting from a guess.
     snap_enabled: bool,
+    /// Frameless window (no system title bar / resize border).
+    borderless: bool,
+    /// True while immersive mode is on, i.e. the five states below are being
+    /// overridden rather than chosen. The settings panel uses this to show the
+    /// switches as "held by immersive mode" instead of lying about them.
+    immersive: bool,
     hotkeys_enabled: bool,
     sidebar_visible: bool,
     ui_lang: String,
@@ -398,6 +404,9 @@ enum HotkeyAction {
     IncreaseOpacity,
     RequestFullScreen,
     CloseApp,
+    /// One key for "stop showing me the furniture": frameless, chrome
+    /// collapsed, click-through, always on top, position locked — and back.
+    ToggleImmersive,
 }
 
 struct SnapGuard<'a> {
@@ -1151,6 +1160,20 @@ fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
 
     let template = r##"
 (() => {
+  // WebView2 runs an initialization script in *every* frame, iframes included.
+  // Each frame that booted the shell painted its own rail and top strip inside
+  // its own box, so a page with several embeds showed a strip every few hundred
+  // pixels — the chrome appeared to repeat down the page. Only the top document
+  // owns the chrome; sub-frames get nothing at all.
+  //
+  // The identity test is the only one that is safe in a cross-origin frame:
+  // `window.top` is readable without touching any property on it.
+  if (window.top !== window) return;
+  // Same document, twice (a re-injected script after a bfcache restore, or a
+  // second initialization pass): every later call would re-register the
+  // navigation listeners and re-apply the page inset on top of the shell's own.
+  if (window.__diviewerShellBooted) return;
+  window.__diviewerShellBooted = true;
   // Theme first: `system` is resolved against the engine's own
   // prefers-color-scheme (which WebView2 maps to the Windows app theme), so a
   // dark desktop never gets a white chrome frame, and no registry access is
@@ -1216,6 +1239,9 @@ fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
     'set_inside_mode',
     'toggle_lock_position',
     'toggle_sidebar',
+    'set_borderless',
+    'toggle_immersive',
+    'start_dragging',
     'set_opacity',
     'set_shell_opacity',
     'increase_opacity',
@@ -1275,6 +1301,9 @@ fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
     set_inside_mode: (inside) => call('set_inside_mode', { inside: Boolean(inside) }),
     toggle_lock_position: () => call('toggle_lock_position'),
     toggle_sidebar: () => call('toggle_sidebar'),
+    set_borderless: (borderless) => call('set_borderless', { borderless: Boolean(borderless) }),
+    toggle_immersive: () => call('toggle_immersive'),
+    start_dragging: () => call('start_dragging'),
     set_opacity: (opacity) => call('set_opacity', { opacity: Number(opacity || 1) }),
     set_shell_opacity: (opacity) => call('set_shell_opacity', { opacity: Number(opacity || 1) }),
     increase_opacity: () => call('increase_opacity'),
@@ -2022,6 +2051,158 @@ fn set_inside_mode_command(app: AppHandle, inside: bool) -> AppResult<bool> {
     set_inside_mode_impl(&app, inside)
 }
 
+/// Frameless window: no system title bar, no resize border.
+///
+/// Only the browser window is ever made frameless. The control window is a
+/// dialog with its own close button; stripping its frame would leave it with no
+/// way out at all.
+fn set_borderless_impl(app: &AppHandle, borderless: bool) -> AppResult<bool> {
+    let window = browser_window(app)?;
+    window
+        .set_decorations(!borderless)
+        .map_err(|err| format!("Set decorations failed: {err}"))?;
+    let state = app.state::<AppState>();
+    update_persist(&state, |persist| {
+        persist.window_borderless = borderless;
+    })?;
+    Ok(borderless)
+}
+
+/// Set (rather than toggle) the position lock. Unlocking is just the flag;
+/// locking also stamps the current position as the anchor, which is what the
+/// move handler keeps restoring the window to.
+fn set_position_locked_impl(app: &AppHandle, locked: bool) -> AppResult<bool> {
+    let browser = browser_window(app)?;
+    let position = browser
+        .outer_position()
+        .map_err(|err| format!("Read position failed: {err}"))?;
+    let scale = browser.scale_factor().unwrap_or(1.0).max(0.01);
+    let state = app.state::<AppState>();
+    update_persist(&state, |persist| {
+        persist.window_position_locked = locked;
+        if locked {
+            persist.window_start_x = position.x as f64 / scale;
+            persist.window_start_y = position.y as f64 / scale;
+        }
+    })?;
+    Ok(locked)
+}
+
+/// Show or hide the shell's rail and top strip in every open tab.
+fn set_sidebar_visible_impl(app: &AppHandle, visible: bool) -> AppResult<bool> {
+    let state = app.state::<AppState>();
+    state.sidebar_visible.store(visible, Ordering::SeqCst);
+    let labels = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        locked
+            .tabs
+            .iter()
+            .map(|tab| tab.label.clone())
+            .collect::<Vec<_>>()
+    };
+    let script = shared_shell_visibility_script(visible);
+    for label in labels {
+        if let Some(browser) = app.get_webview(&label) {
+            let _ = browser.eval(script.clone());
+        }
+    }
+    Ok(visible)
+}
+
+/// Immersive mode: the five things you want gone while watching something, on
+/// one key, and exactly back the way they were on the next press.
+///
+/// It is a *restore*, not a reset. If the window was already pinned and already
+/// position-locked when the user entered, leaving must not quietly unpin it —
+/// so the five states are captured on the way in and replayed on the way out.
+fn toggle_immersive_impl(app: &AppHandle) -> AppResult<bool> {
+    let state = app.state::<AppState>();
+    let restore = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        locked.persist.immersive_restore.clone()
+    };
+    match restore {
+        Some(snapshot) => exit_immersive_impl(app, &snapshot),
+        None => enter_immersive_impl(app),
+    }
+}
+
+fn enter_immersive_impl(app: &AppHandle) -> AppResult<bool> {
+    let state = app.state::<AppState>();
+    let snapshot = {
+        let locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        ImmersiveSnapshot {
+            borderless: locked.persist.window_borderless,
+            sidebar_visible: state.sidebar_visible.load(Ordering::SeqCst),
+            inside: locked.persist.window_inside,
+            on_top: locked.persist.window_on_top,
+            position_locked: locked.persist.window_position_locked,
+        }
+    };
+
+    // Recorded before anything is applied, so a failure halfway through still
+    // leaves a snapshot to unwind from — on this launch or the next one.
+    update_persist(&state, |persist| {
+        persist.immersive_restore = Some(snapshot.clone());
+    })?;
+
+    set_borderless_impl(app, true)?;
+    set_sidebar_visible_impl(app, false)?;
+    {
+        let window = browser_window(app)?;
+        window
+            .set_always_on_top(true)
+            .map_err(|err| format!("Set always-on-top failed: {err}"))?;
+    }
+    update_persist(&state, |persist| {
+        persist.window_on_top = true;
+    })?;
+    set_position_locked_impl(app, true)?;
+    // Click-through last: from this point the window ignores the cursor
+    // entirely, so anything that still needed doing would have to be done
+    // through the keyboard.
+    set_inside_mode_impl(app, true)?;
+
+    push_log(app, "ui", "immersive", "on".to_string());
+    Ok(true)
+}
+
+fn exit_immersive_impl(app: &AppHandle, restore: &ImmersiveSnapshot) -> AppResult<bool> {
+    set_borderless_impl(app, restore.borderless)?;
+    set_sidebar_visible_impl(app, restore.sidebar_visible)?;
+    {
+        let window = browser_window(app)?;
+        window
+            .set_always_on_top(restore.on_top)
+            .map_err(|err| format!("Set always-on-top failed: {err}"))?;
+    }
+    let state = app.state::<AppState>();
+    update_persist(&state, |persist| {
+        persist.window_on_top = restore.on_top;
+    })?;
+    set_position_locked_impl(app, restore.position_locked)?;
+    // Click-through is released before the snapshot is cleared: as long as the
+    // snapshot survives, the app still counts itself immersive, so a failure
+    // here is retryable instead of leaving a window that can neither be clicked
+    // nor un-immersed.
+    set_inside_mode_impl(app, restore.inside)?;
+    update_persist(&state, |persist| {
+        persist.immersive_restore = None;
+    })?;
+
+    push_log(app, "ui", "immersive", "off".to_string());
+    Ok(false)
+}
+
 fn toggle_on_top_impl(app: &AppHandle) -> AppResult<bool> {
     let state = app.state::<AppState>();
     let next = {
@@ -2557,6 +2738,10 @@ fn run_hotkey_action(app: &AppHandle, action: HotkeyAction) -> AppResult<()> {
             close_app_impl(app);
             Ok(())
         }
+        HotkeyAction::ToggleImmersive => {
+            toggle_immersive_impl(app)?;
+            Ok(())
+        }
     }
 }
 
@@ -2633,6 +2818,11 @@ fn register_hotkeys(app: &AppHandle, config: &HotkeyConfig, enabled: bool) {
             "closeWindow",
             config.close_window.as_str(),
             HotkeyAction::CloseApp,
+        ),
+        (
+            "immersiveMode",
+            config.immersive_mode.as_str(),
+            HotkeyAction::ToggleImmersive,
         ),
     ];
 
@@ -2927,6 +3117,19 @@ fn create_browser_window(app: &AppHandle) -> AppResult<()> {
     }
     if initial.window_on_top {
         let _ = window.set_always_on_top(true);
+    }
+    if initial.window_borderless {
+        let _ = window.set_decorations(false);
+    }
+    // Immersive mode is never resumed. It writes the same persisted fields any
+    // other switch writes, so a session killed while immersive would otherwise
+    // come back frameless, click-through and position-locked — a window with
+    // nothing to click and no title bar to grab. Unwind it here, before the
+    // first frame is shown, using the snapshot that was stored on the way in.
+    if let Some(snapshot) = initial.immersive_restore.clone() {
+        if let Err(err) = exit_immersive_impl(app, &snapshot) {
+            push_log(app, "native", "resume_immersive", format!("failed:{err}"));
+        }
     }
     apply_window_effects(&window, initial.window_opacity, initial.window_inside)?;
     window
@@ -3346,6 +3549,8 @@ async fn get_state(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResu
         maximized: snapshot.0.window_maximized,
         position_locked: snapshot.0.window_position_locked,
         snap_enabled: state.snap_enabled.load(Ordering::SeqCst),
+        borderless: snapshot.0.window_borderless,
+        immersive: snapshot.0.immersive_restore.is_some(),
         hotkeys_enabled: snapshot.0.hotkeys_enabled,
         sidebar_visible: state.sidebar_visible.load(Ordering::SeqCst),
         ui_lang: current_ui_lang(&state),
@@ -4249,27 +4454,35 @@ async fn refresh_page(app: AppHandle) -> AppResult<String> {
 
 #[tauri::command]
 async fn toggle_sidebar(app: AppHandle) -> AppResult<bool> {
-    let state = app.state::<AppState>();
-    let next = !state.sidebar_visible.load(Ordering::SeqCst);
-    state.sidebar_visible.store(next, Ordering::SeqCst);
-    let labels = {
-        let locked = state
-            .data
-            .lock()
-            .map_err(|_| "State lock poisoned".to_string())?;
-        locked
-            .tabs
-            .iter()
-            .map(|tab| tab.label.clone())
-            .collect::<Vec<_>>()
+    let next = {
+        let state = app.state::<AppState>();
+        !state.sidebar_visible.load(Ordering::SeqCst)
     };
-    let script = shared_shell_visibility_script(next);
-    for label in labels {
-        if let Some(browser) = app.get_webview(&label) {
-            let _ = browser.eval(script.clone());
-        }
-    }
-    Ok(next)
+    set_sidebar_visible_impl(&app, next)
+}
+
+#[tauri::command]
+async fn set_borderless(app: AppHandle, borderless: bool) -> AppResult<bool> {
+    set_borderless_impl(&app, borderless)
+}
+
+#[tauri::command]
+async fn toggle_immersive(app: AppHandle) -> AppResult<bool> {
+    toggle_immersive_impl(&app)
+}
+
+/// Hand a pointer gesture to the OS to drag the window by.
+///
+/// Decorated, Windows drags the window by its title bar. Frameless there is no
+/// title bar at all, so without this the window could not be moved anywhere —
+/// and moving it is the one thing a picture-in-picture viewer must be able to
+/// do. Pressing the shell's own top strip calls this.
+#[tauri::command]
+async fn start_dragging(app: AppHandle) -> AppResult<()> {
+    let window = browser_window(&app)?;
+    window
+        .start_dragging()
+        .map_err(|err| format!("Start dragging failed: {err}"))
 }
 
 #[tauri::command]
@@ -4580,6 +4793,9 @@ pub fn run() {
             maximize_restore_browser,
             video_action,
             toggle_sidebar,
+            set_borderless,
+            toggle_immersive,
+            start_dragging,
             open_control_panel,
             save_hotkeys,
             reset_hotkeys,

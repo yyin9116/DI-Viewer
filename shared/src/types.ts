@@ -14,6 +14,8 @@ export interface HotkeyConfig {
   increaseOpacity: string;
   requestFullScreen: string;
   closeWindow: string;
+  /** One key that flips frameless + chrome-off + click-through + on-top + locked. */
+  immersiveMode: string;
 }
 
 export interface FrontendState {
@@ -26,6 +28,10 @@ export interface FrontendState {
   positionLocked: boolean;
   /** "贴边吸附": releasing the window near a work-area edge sticks it there. */
   snapEnabled: boolean;
+  /** Frameless window: no system title bar, no resize border. */
+  borderless: boolean;
+  /** True while immersive mode is holding the five states above. */
+  immersive: boolean;
   hotkeysEnabled: boolean;
   sidebarVisible: boolean;
   uiLang: string;
