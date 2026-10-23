@@ -93,13 +93,15 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
           scale: 1
         }}
         transition={{ duration: 0.2 }}
-        /* The offset is baked into `top` instead of using `-translate-y-1/2`:
-           framer-motion writes `transform` inline to drive the `x` above, and an
-           inline transform beats the Tailwind class, so the class did nothing
-           and the 96px box hung *from* the midline instead of straddling it.
-           Half of h-24 (3rem) is subtracted so the box is centred on 50dvh. */
-        style={{ top: 'calc(50dvh - 3rem)' }}
-        className={`fixed left-2 z-[2147483647] flex h-24 w-8 items-center justify-center group ${isOpen ? 'pointer-events-none' : 'pointer-events-auto cursor-pointer'}`}
+        /* Centred by `top-0 bottom-0 my-auto` rather than by an offset: with
+           both edges pinned and auto block margins, the box centres itself at
+           whatever height it has. The previous `top: 50dvh` + `-translate-y-1/2`
+           silently lost the translate (the companion `--tw-translate-x` is not
+           defined in the injected shadow root, see index.css), so the grip hung
+           *from* the midline and sat 48px low; a hard-coded
+           `calc(50dvh - 3rem)` would have fixed that but re-breaks the centring
+           every time the handle's length changes. */
+        className={`fixed left-2 top-0 bottom-0 my-auto z-[2147483647] flex h-28 w-8 items-center justify-center group ${isOpen ? 'pointer-events-none' : 'pointer-events-auto cursor-pointer'}`}
         data-tone={isDarkMode ? 'dark' : 'light'}
         onClick={onToggle}
         title={t.expand}
@@ -111,9 +113,9 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
             from the `isDarkMode` the rest of the rail is using. */}
         <span
           aria-hidden="true"
-          className="rail-handle-bloom pointer-events-none absolute inset-0 m-auto h-14 w-3 rounded-full"
+          className="rail-handle-bloom pointer-events-none absolute inset-0 m-auto h-20 w-3 rounded-full group-hover:h-24"
         />
-        <div className="rail-handle-core relative h-14 w-1.5 rounded-full group-hover:h-16 group-hover:w-[7px]" />
+        <div className="rail-handle-core relative h-20 w-1.5 rounded-full group-hover:h-24 group-hover:w-[7px]" />
       </motion.button>
 
       <motion.div
