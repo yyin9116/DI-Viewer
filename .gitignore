@@ -21,6 +21,7 @@ tauri-di-viewer/src-tauri/gen/
 # Shared package build artifacts
 shared/node_modules/
 shared/dist/
+*.tsbuildinfo
 
 # Local scratch space
 .scratch/
