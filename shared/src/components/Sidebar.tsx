@@ -113,7 +113,7 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
             from the `isDarkMode` the rest of the rail is using. */}
         <span
           aria-hidden="true"
-          className="rail-handle-bloom pointer-events-none absolute inset-0 m-auto h-20 w-3 rounded-full group-hover:h-24"
+          className="rail-handle-bloom pointer-events-none absolute inset-0 m-auto h-20 w-2 rounded-full group-hover:h-24"
         />
         <div className="rail-handle-core relative h-20 w-1.5 rounded-full group-hover:h-24 group-hover:w-[7px]" />
       </motion.button>

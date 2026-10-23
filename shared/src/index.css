@@ -344,18 +344,23 @@ body {
 /*
  * Collapsed-rail handle ("把手"). The grip itself keeps its original look - a
  * bright white capsule on dark chrome, a near-black one on light chrome - and
- * only the halo around it goes blue: deep blue in dark mode, pale blue in light
- * mode. Blue is carried by two layers that sit *outside* the grip, so the grip
- * stays a crisp, high-contrast shape instead of turning into a coloured pill:
+ * only the halo around it goes blue. The blue is the same deep blue in both
+ * tones: next to a near-black grip a pale halo washes out and reads as haze,
+ * so the light grip wears the deeper blue too. Blue is carried by two layers
+ * that sit *outside* the grip, so the grip stays a crisp, high-contrast shape
+ * instead of turning into a coloured pill:
  *
  *  - `.rail-handle-bloom` is a blurred radial disc behind the grip, which reads
- *    as light rather than as a hard ring. Two large box-shadow radii on a 6px
- *    bar look like a glow-stick outline, not a glow.
+ *    as light rather than as a hard ring. It is kept tight and only lightly
+ *    blurred: a wide, heavily blurred disc stops reading as light and starts
+ *    reading as fog.
  *  - the box-shadow on `.rail-handle-core` carries a ring in the grip's *own*
- *    colour plus a short blue falloff. Same colour, not contrast: the near-black
- *    light grip gets a black ring, the white dark grip a white one, so the ring
- *    reads as the body's own edge softening outward. A ring in the contrasting
- *    colour would read as a drawn stroke, so neither tone has one.
+ *    colour plus a blue falloff built from three closely spaced radii. The
+ *    falloff has to fall off fast - a bright 3px collar, a 9px shoulder, a faint
+ *    18px breath - because a single wide radius of low-opacity blue is exactly
+ *    what makes a glow look cloudy instead of clear. Same colour ring, not
+ *    contrast: the near-black light grip gets a black ring, the white dark grip
+ *    a white one.
  *
  * `data-tone` lives on the button (driven by `isDarkMode`) rather than relying on
  * an ancestor `.dark`, so the handle can never pick up a stale theme.
@@ -364,20 +369,21 @@ body {
   background: rgba(0, 0, 0, 0.9);
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.28),
-    0 0 12px rgba(147, 197, 253, 0.85),
-    0 0 26px rgba(96, 165, 250, 0.5);
+    0 0 3px rgba(59, 130, 246, 1),
+    0 0 9px rgba(37, 99, 235, 0.75),
+    0 0 18px rgba(37, 99, 235, 0.32);
   transition: box-shadow 300ms ease, height 300ms ease, width 300ms ease;
 }
 
 .rail-handle-bloom {
   background: radial-gradient(
     closest-side,
-    rgba(96, 165, 250, 0.55),
-    rgba(147, 197, 253, 0.28) 58%,
-    rgba(147, 197, 253, 0) 100%
+    rgba(37, 99, 235, 0.55),
+    rgba(37, 99, 235, 0.22) 62%,
+    rgba(37, 99, 235, 0) 100%
   );
-  filter: blur(7px);
-  opacity: 0.6;
+  filter: blur(3px);
+  opacity: 0.45;
   transition: opacity 320ms ease, height 300ms ease;
 }
 
@@ -385,18 +391,19 @@ body {
   background: rgba(255, 255, 255, 0.95);
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.35),
-    0 0 13px rgba(59, 130, 246, 0.9),
-    0 0 30px rgba(37, 99, 235, 0.55);
+    0 0 3px rgba(59, 130, 246, 1),
+    0 0 10px rgba(37, 99, 235, 0.8),
+    0 0 20px rgba(37, 99, 235, 0.35);
 }
 
 [data-tone='dark'] .rail-handle-bloom {
   background: radial-gradient(
     closest-side,
-    rgba(37, 99, 235, 0.78),
-    rgba(37, 99, 235, 0.34) 55%,
+    rgba(37, 99, 235, 0.65),
+    rgba(37, 99, 235, 0.26) 60%,
     rgba(37, 99, 235, 0) 100%
   );
-  opacity: 0.72;
+  opacity: 0.55;
 }
 
 /* Hover: the glow widens and brightens, the grip itself only grows (as before). */
@@ -404,16 +411,18 @@ body {
 .group:focus-visible .rail-handle-core {
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.3),
-    0 0 16px rgba(147, 197, 253, 1),
-    0 0 34px rgba(96, 165, 250, 0.65);
+    0 0 4px rgba(59, 130, 246, 1),
+    0 0 12px rgba(37, 99, 235, 0.85),
+    0 0 24px rgba(37, 99, 235, 0.4);
 }
 
 [data-tone='dark'] .group:hover .rail-handle-core,
 [data-tone='dark'] .group:focus-visible .rail-handle-core {
   box-shadow:
     0 0 0 1px rgba(255, 255, 255, 0.4),
-    0 0 18px rgba(59, 130, 246, 1),
-    0 0 40px rgba(37, 99, 235, 0.7);
+    0 0 4px rgba(59, 130, 246, 1),
+    0 0 13px rgba(37, 99, 235, 0.9),
+    0 0 26px rgba(37, 99, 235, 0.42);
 }
 
 .group:hover .rail-handle-bloom,
