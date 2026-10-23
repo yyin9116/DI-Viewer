@@ -1,4 +1,4 @@
-import type { DockColor, FrontendState, HostSnapshot, HotkeyConfig, TabSessionSnapshot } from '../types';
+import type { DockColor, FrontendState, HostSnapshot, HotkeyConfig, TabSessionSnapshot, ThemeMode } from '../types';
 
 type BridgeFn = (...args: any[]) => unknown;
 type BridgeSource = 'tauri' | 'pywebview' | 'qwebchannel' | 'mock' | 'external';
@@ -47,7 +47,10 @@ const defaultState: FrontendState = {
   uiLang: 'zh',
   bookmarks: [],
   hotkeys: defaultHotkeys,
-  hotkeyConflicts: []
+  hotkeyConflicts: [],
+  startPageUrl: '',
+  startPageBuiltin: true,
+  themeMode: 'system'
 };
 
 const defaultTabs: TabSessionSnapshot = {
@@ -103,8 +106,16 @@ function normalizeState(raw: unknown): FrontendState {
     },
     hotkeyConflicts: Array.isArray(state.hotkeyConflicts)
       ? state.hotkeyConflicts.map((item) => String(item))
-      : []
+      : [],
+    startPageUrl: String(state.startPageUrl ?? state.start_page_url ?? ''),
+    startPageBuiltin: Boolean(state.startPageBuiltin ?? state.start_page_builtin ?? true),
+    themeMode: normalizeThemeMode(state.themeMode ?? state.theme_mode)
   };
+}
+
+function normalizeThemeMode(raw: unknown): ThemeMode {
+  const value = String(raw ?? '').toLowerCase();
+  return value === 'light' || value === 'dark' ? value : 'system';
 }
 
 function normalizeTabs(raw: unknown): TabSessionSnapshot {
@@ -165,6 +176,8 @@ function buildPyWebviewBridge(call: (name: string, args?: unknown) => Promise<un
     set_ui_language: (lang: string) => call('set_ui_language', [lang]),
     get_dock_color: () => call('get_dock_color'),
     set_dock_color: (color: DockColor) => call('set_dock_color', [color]),
+    get_start_page: () => call('get_start_page'),
+    set_start_page: (url: string) => call('set_start_page', [url]),
     open_control_panel: () => call('open_control_panel'),
     open_external: (url: string) => call('open_external', [url]),
     resize_to_ratio: (ratio: number) => call('resize_to_ratio', [ratio]),
@@ -211,6 +224,8 @@ function buildTauriBridge(invoke: (cmd: string, args?: Record<string, unknown>) 
     set_ui_language: (lang: string) => invoke('set_ui_language', { lang }),
     get_dock_color: () => invoke('get_dock_color'),
     set_dock_color: (color: DockColor) => invoke('set_dock_color', { color }),
+    get_start_page: () => invoke('get_start_page'),
+    set_start_page: (url: string) => invoke('set_start_page', { url }),
     open_control_panel: () => invoke('open_control_panel'),
     open_external: (url: string) => invoke('open_external', { url }),
     resize_to_ratio: (ratio: number) => invoke('resize_to_ratio', { ratio }),
@@ -404,11 +419,29 @@ export const hostBridge = {
   saveBookmark(url: string, title: string) {
     return callBridge('add_bookmark', url, title);
   },
+  removeBookmark(url: string) {
+    return callBridge<{ title: string; url: string }[]>('remove_bookmark', url);
+  },
   videoAction(action: string) {
     return callBridge('video_action', action);
   },
   setDockColor(color: DockColor) {
     return callBridge('set_dock_color', color);
+  },
+  /**
+   * Point "home" at another address. An empty string restores the built-in
+   * start page. Resolves with the effective config (the host canonicalises the
+   * input, so the panel shows what was actually stored).
+   */
+  setStartPage(url: string) {
+    return callBridge<{ url: string; builtin: boolean }>('set_start_page', url);
+  },
+  getStartPage() {
+    return callBridge<{ url: string; builtin: boolean }>('get_start_page');
+  },
+  /** Returns the stored mode (`light` | `dark` | `system`) after normalisation. */
+  setTheme(mode: ThemeMode) {
+    return callBridge<string>('set_theme', mode);
   },
   toggleSidebar() {
     return callBridge('toggle_sidebar');

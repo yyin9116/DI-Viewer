@@ -35,9 +35,10 @@
     body {
       margin: 0;
       /* The shell insets the page by its own chrome through `html` padding, so
-         `100vh` here would push the page 88px past the bottom edge of every
-         window — the page then always scrolled a little and the last row of
-         cards was cut. Subtract the inset instead. */
+         `100vh` here would push the page past the bottom edge of every window
+         — the page then always scrolled a little and the last row of cards was
+         cut. Subtract the inset instead (it is 88/82/74px depending on how
+         narrow the window is; never hard-code one of them). */
       min-height: calc(100vh - var(--diviewer-inset-top, 0px));
       padding: 16px 12px 20px;
       overflow: auto;
@@ -58,8 +59,9 @@
       height: 0;
     }
 
-    /* The shell insets the page by its own chrome (88px top / 80px rail)
-       through html padding, so this only carries the remaining breathing room. */
+    /* The shell insets the page by its own chrome (88px top / 80px rail at the
+       widest tier, less when the window narrows) through html padding, so this
+       only carries the remaining breathing room. */
     body.shell-open {
       padding: 28px 18px 16px 24px;
     }
@@ -1038,7 +1040,8 @@
     }
 
     /*
-     * Height-driven compaction. The overlay chrome eats 88px at the top, so a
+     * Height-driven compaction. The overlay chrome eats ~74-88px at the top
+     * (it is a fixed 88 plus two narrower tiers), so a
      * 480px-tall window (the 1/3 preset) leaves the page ~390px. Width media
      * queries cannot see that: the page stayed in its roomy layout, the search
      * field and the whole favourites grid ended up below the fold, and the
@@ -1287,7 +1290,7 @@
   </div>
 
   <script>
-    const STORAGE_KEYS = { links: 'zen_quick_links', engine: 'zen_search_engine', recent: 'zen_recent' };
+    const STORAGE_KEYS = { links: 'zen_quick_links', engine: 'zen_search_engine', recent: 'zen_recent', hostOwned: 'zen_host_links' };
     const STATE = { editing: false, draggingId: null };
     const LUCIDE_ICON_PATHS = {
       Globe: '<circle cx="12" cy="12" r="10"></circle><path d="M2 12h20"></path><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>',
@@ -1535,6 +1538,33 @@
       localStorage.setItem(STORAGE_KEYS.links, JSON.stringify(links));
     }
 
+    /*
+     * Which tiles came from the host's bookmark list.
+     *
+     * The rail's bookmarks and the user's own tiles live in one array here, so
+     * "the host no longer has this URL" is not the same as "the user wants to
+     * delete it" — and id prefixes were not reliable evidence (`host_0_x` could
+     * be saved back as a plain `link_…`). Keeping the last known host set
+     * explicitly is what lets a removal on the rail actually clear the tile.
+     */
+    function readHostOwned() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEYS.hostOwned);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return new Set(
+          (Array.isArray(parsed) ? parsed : []).map((url) => normalizeUrl(String(url)).toLowerCase()).filter(Boolean)
+        );
+      } catch (_e) {
+        return new Set();
+      }
+    }
+
+    function writeHostOwned(keys) {
+      try {
+        localStorage.setItem(STORAGE_KEYS.hostOwned, JSON.stringify([...keys]));
+      } catch (_e) {}
+    }
+
     function getRecentItems() {
       try {
         const raw = localStorage.getItem(STORAGE_KEYS.recent);
@@ -1711,6 +1741,12 @@
       const bridge = getHostBridge();
       if (bridge && typeof bridge.get_bookmarks === 'function') {
         const hostItems = normalizeHostBookmarks(await Promise.resolve(bridge.get_bookmarks()).catch(() => []));
+        const owned = readHostOwned();
+        hostItems.forEach((item) => {
+          const key = normalizeUrl(item.url).toLowerCase();
+          owned.add(key);
+        });
+        writeHostOwned(owned);
         if (hostItems.length) {
           const existing = new Map();
           links.forEach((item) => existing.set(normalizeUrl(item.url).toLowerCase(), item));
@@ -1925,6 +1961,11 @@
         fallbackName = rawUrl;
       }
       const name = (rawTitle || fallbackName).slice(0, 40);
+      // It came from the rail, so the host list owns it: record that, or the
+      // matching un-bookmark later cannot tell it apart from a manual tile.
+      const owned = readHostOwned();
+      owned.add(normalizeUrl(rawUrl).toLowerCase());
+      writeHostOwned(owned);
       upsertLink({
         id: `link_${Math.random().toString(36).slice(2, 9)}`,
         name,
@@ -2045,6 +2086,40 @@
 
     window.addEventListener('diviewer:bookmark-added', (event) => {
       addBookmarkFromShell(event?.detail || {});
+    });
+
+    // The host re-broadcasts after every save/remove and is authoritative for
+    // the tiles it owns; the ones it no longer lists are dropped here, which is
+    // what makes "unbookmark from the rail" clear the tile instead of leaving a
+    // ghost until the next restart.
+    window.addEventListener('diviewer:bookmarks-changed', async () => {
+      const bridge = getHostBridge();
+      if (!bridge || typeof bridge.get_bookmarks !== 'function') return;
+      const hostItems = normalizeHostBookmarks(await Promise.resolve(bridge.get_bookmarks()).catch(() => []));
+      const hostKeys = new Set(hostItems.map((item) => normalizeUrl(item.url).toLowerCase()).filter(Boolean));
+      const ownedBefore = readHostOwned();
+      const known = new Set(links.map((item) => normalizeUrl(item.url).toLowerCase()));
+      let changed = false;
+      links = links.filter((item) => {
+        const key = normalizeUrl(item.url).toLowerCase();
+        if (ownedBefore.has(key) && !hostKeys.has(key)) {
+          changed = true;
+          return false;
+        }
+        return true;
+      });
+      hostItems.forEach((item) => {
+        const key = normalizeUrl(item.url).toLowerCase();
+        if (!key || known.has(key)) return;
+        links.unshift(item);
+        known.add(key);
+        changed = true;
+      });
+      writeHostOwned(hostKeys);
+      if (changed) {
+        saveLinks();
+        renderLinks();
+      }
     });
 
     (async () => {

@@ -31,7 +31,19 @@ export interface FrontendState {
   hotkeys: HotkeyConfig;
   /** `name=combo: reason` for bindings the OS refused (already owned). */
   hotkeyConflicts: string[];
+  /** Effective home address: new tabs and `go_home` open on this. */
+  startPageUrl: string;
+  /** True when `startPageUrl` is the page bundled with the app. */
+  startPageBuiltin: boolean;
+  /**
+   * The user's choice, not the resolved theme: `light` | `dark` | `system`.
+   * Resolution happens in the shell (`matchMedia`), so the chrome follows the
+   * desktop when it is `system` without the host having to watch it.
+   */
+  themeMode: ThemeMode;
 }
+
+export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface TabSessionItem {
   index: number;

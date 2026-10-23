@@ -6,7 +6,8 @@ import { MainMenu } from './components/MainMenu';
 import { hostBridge } from './bridge/hostBridge';
 import { matchInAppHotkey } from './lib/inAppHotkeys';
 import { useViewport } from './lib/useViewport';
-import type { FrontendState, HostSnapshot, HotkeyConfig } from './types';
+import { chromeMetricsFor } from './lib/chromeMetrics';
+import type { FrontendState, HostSnapshot, HotkeyConfig, ThemeMode } from './types';
 export interface Tab {
   id: string;
   title: string;
@@ -43,24 +44,50 @@ const defaultState: FrontendState = {
     requestFullScreen: 'O',
     closeWindow: 'Ctrl+Q'
   },
-  hotkeyConflicts: []
+  hotkeyConflicts: [],
+  startPageUrl: '',
+  startPageBuiltin: true,
+  themeMode: 'system'
 };
 const GITHUB_REPO_URL = 'https://github.com/yyin9116/DI-Viewer';
-/** Toolbar (56) + tab strip (32) — see SHELL_CHROME_HEIGHT in main.rs. */
-const SHELL_CHROME_HEIGHT = 88;
-/** Width of the left rail — see SHELL_SIDEBAR_WIDTH in main.rs. */
-const SHELL_SIDEBAR_WIDTH = 80;
+
+/**
+ * Compare two page URLs for "same page as the bookmark" purposes.
+ *
+ * The host normalises what it stores (`https://example.org/`), while the tab
+ * URL comes straight from the webview and can be the bare form without the
+ * trailing slash. A plain `===` misses that pair and the bookmark button stays
+ * unlit on a page that is in fact saved.
+ */
+function samePage(left: string, right: string): boolean {
+  const clean = (value: string) => {
+    const trimmed = (value || '').trim().toLowerCase();
+    if (!trimmed) return '';
+    return trimmed.endsWith('/') ? trimmed.slice(0, -1) : trimmed;
+  };
+  return clean(left) !== '' && clean(left) === clean(right);
+}
 
 const I18N = {
   zh: {
     newTab: '\u65b0\u6807\u7b7e\u9875',
     insideModeHint: '\u5df2\u8fdb\u5165\u70b9\u51fb\u7a7f\u900f\uff0c\u6309 {key} \u9000\u51fa\u7a7f\u900f',
+    bookmarkSaved: '\u5df2\u6536\u85cf\u5f53\u524d\u9875\u9762',
+    bookmarkExists: '\u5f53\u524d\u9875\u9762\u5df2\u5728\u6536\u85cf\u4e2d',
+    bookmarkRemoved: '\u5df2\u53d6\u6d88\u6536\u85cf',
+    startPageSaved: '\u8d77\u59cb\u9875\u5df2\u66f4\u65b0',
+    startPageInvalid: '\u5730\u5740\u65e0\u6548\uff0c\u672a\u4fdd\u5b58',
     bridgeErrorTitle: '\u63a7\u5236\u6865\u63a5\u4e0d\u53ef\u7528',
     bridgeErrorBody: '\u5de6\u4fa7\u63a7\u5236\u53ef\u80fd\u65e0\u6cd5\u540c\u6b65\u7a97\u53e3\u72b6\u6001\u3002\u8bf7\u91cd\u542f DI-Viewer\uff0c\u6216\u6253\u5f00\u8fd0\u884c\u8bca\u65ad\u67e5\u770b\u8be6\u60c5\u3002'
   },
   en: {
     newTab: 'New Tab',
     insideModeHint: 'Click-through enabled, press {key} to disable',
+    bookmarkSaved: 'Page saved to bookmarks',
+    bookmarkExists: 'This page is already bookmarked',
+    bookmarkRemoved: 'Bookmark removed',
+    startPageSaved: 'Start page updated',
+    startPageInvalid: 'Invalid address — not saved',
     bridgeErrorTitle: 'Control bridge unavailable',
     bridgeErrorBody: 'The sidebar may not sync with the window state. Restart DI-Viewer or open diagnostics for details.'
   }
@@ -72,7 +99,21 @@ export default function App() {
     dockColor: 'white'
   });
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  /**
+   * Theme: the *choice* lives here and on the host (`theme_mode`), the *resolved*
+   * value is derived. It used to be a single `isDarkMode` boolean inferred from
+   * whatever page was open (`document.documentElement.classList`), which is why
+   * every new tab started light and why a dark site could repaint the chrome.
+   */
+  const [themeMode, setThemeMode] = useState<ThemeMode>('system');
+  const [systemDark, setSystemDark] = useState(() => {
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    } catch {
+      return false;
+    }
+  });
+  const isDarkMode = themeMode === 'dark' || (themeMode === 'system' && systemDark);
   const [tabHistoryState, setTabHistoryState] = useState<Record<string, TabHistoryState>>({});
   const [uiLang, setUiLang] = useState<UILang>('zh');
   /// Transient, user-facing notice (entering click-through). Named for what it
@@ -80,6 +121,42 @@ export default function App() {
   /// from every bridge call, which surfaced as a grey debug box in the corner.
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [bridgeError, setBridgeError] = useState<string | null>(null);
+  /**
+   * Adopt a theme and tell the host, which persists it and re-broadcasts to the
+   * other tabs (each tab is its own document with its own shell).
+   *
+   * Deliberately not routed through `run()`: that helper resyncs the whole
+   * snapshot after every call, which would stamp the old value back over the
+   * optimistic update below while the write is in flight.
+   */
+  const applyThemeChoice = (mode: ThemeMode) => {
+    setThemeMode(mode);
+    setSnapshot((current) => ({ ...current, state: { ...current.state, themeMode: mode } }));
+    void hostBridge.setTheme(mode).catch(() => undefined);
+  };
+  /**
+   * The host is only consulted once, on the first snapshot. Afterwards the
+   * broadcaster owns the value: polling `get_state` every 1200ms would otherwise
+   * stamp the previous mode back over a choice that is still being written,
+   * which showed up as the chrome blinking back to the old theme.
+   */
+  const themeSeeded = useRef(false);
+  const adoptHostTheme = (mode: ThemeMode) => {
+    if (themeSeeded.current) return;
+    themeSeeded.current = true;
+    setThemeMode(mode);
+  };
+  useEffect(() => {
+    let query: MediaQueryList | null = null;
+    try {
+      query = window.matchMedia('(prefers-color-scheme: dark)');
+    } catch {
+      return;
+    }
+    const handleChange = (event: MediaQueryListEvent) => setSystemDark(event.matches);
+    query.addEventListener('change', handleChange);
+    return () => query?.removeEventListener('change', handleChange);
+  }, []);
   useEffect(() => {
     setTabHistoryState((current) => {
       const next: Record<string, TabHistoryState> = {};
@@ -141,6 +218,7 @@ export default function App() {
       setSnapshot(next);
       const inferred = String(next.state.uiLang || '').toLowerCase();
       setUiLang(inferred.startsWith('en') ? 'en' : 'zh');
+      adoptHostTheme(next.state.themeMode);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setBridgeError(message);
@@ -156,6 +234,7 @@ export default function App() {
         setSnapshot(next);
         const inferred = String(next.state.uiLang || '').toLowerCase();
         setUiLang(inferred.startsWith('en') ? 'en' : 'zh');
+        adoptHostTheme(next.state.themeMode);
       } catch (error) {
         if (!mounted) return;
         const message = error instanceof Error ? error.message : String(error);
@@ -186,6 +265,14 @@ export default function App() {
     window.dispatchEvent(new CustomEvent('diviewer:sync'));
   }, [snapshot.state.sidebarVisible]);
   useEffect(() => {
+    // The pre-React placeholder chrome (rail + toolbar painted by the native
+    // bootstrap) is retired the moment React owns the same surface. Leaving it
+    // alive underneath caused the collapsed rail to keep a 1px border and made
+    // the dark rail appear at full size before its spring animation ran.
+    const host = document.getElementById('__diviewer_shared_root__');
+    if (host) host.setAttribute('data-shell-ready', 'true');
+  }, []);
+  useEffect(() => {
     const host = document.getElementById('__diviewer_shared_root__');
     if (!host) return;
     const theme = isDarkMode ? 'dark' : 'light';
@@ -200,28 +287,35 @@ export default function App() {
     if (frame) frame.classList.toggle('dark', isDarkMode);
     window.dispatchEvent(new CustomEvent('diviewer:theme-change', { detail: { theme } }));
   }, [isDarkMode]);
+  /**
+   * Two ways the theme can change from outside this component: the host
+   * broadcasts its stored choice (another tab changed it, or the window was
+   * restored), or a page asks for one through its own theme button.
+   *
+   * The page is never allowed to *be* the source of truth any more — it can only
+   * request a choice, and the host decides.
+   */
   useEffect(() => {
-    const syncFromPage = () => {
-      setIsDarkMode(document.documentElement.classList.contains('dark'));
-    };
-    const handlePageThemeChange = (event: Event) => {
-      const theme = (event as CustomEvent<{ theme?: string }>).detail?.theme;
-      if (theme === 'dark') {
-        setIsDarkMode(true);
-      } else if (theme === 'light') {
-        setIsDarkMode(false);
-      } else {
-        syncFromPage();
+    const handleBroadcast = (event: Event) => {
+      const mode = (event as CustomEvent<{ mode?: string }>).detail?.mode;
+      if (mode === 'light' || mode === 'dark' || mode === 'system') {
+        setThemeMode(mode);
+        setSnapshot((current) => ({ ...current, state: { ...current.state, themeMode: mode } }));
       }
     };
-    syncFromPage();
-    window.addEventListener('diviewer:page-theme-change', handlePageThemeChange);
-    const observer = new MutationObserver(syncFromPage);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => {
-      window.removeEventListener('diviewer:page-theme-change', handlePageThemeChange);
-      observer.disconnect();
+    const handlePageRequest = (event: Event) => {
+      const theme = (event as CustomEvent<{ theme?: string }>).detail?.theme;
+      if (theme === 'dark' || theme === 'light') {
+        applyThemeChoice(theme);
+      }
     };
+    window.addEventListener('diviewer:theme-mode', handleBroadcast);
+    window.addEventListener('diviewer:page-theme-change', handlePageRequest);
+    return () => {
+      window.removeEventListener('diviewer:theme-mode', handleBroadcast);
+      window.removeEventListener('diviewer:page-theme-change', handlePageRequest);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
     const host = document.getElementById('__diviewer_shared_root__');
@@ -382,25 +476,85 @@ export default function App() {
     // binding table, the master switch or the opacity baseline changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [snapshot.state.hotkeysEnabled, snapshot.state.hotkeys, snapshot.state.opacity]);
+  /**
+   * Saving a bookmark goes to the host and shows up on the start page, which is
+   * a different webview - so the rail would otherwise give no sign at all that
+   * the click registered. Light the button, and say so in a toast, for the page
+   * that is already saved.
+   */
+  const isBookmarked = useMemo(
+    () => snapshot.state.bookmarks.some((item) => samePage(item.url, activeTab?.url || '')),
+    [snapshot.state.bookmarks, activeTab?.url]
+  );
+  /**
+   * The rail button is a *toggle*: a page that is already saved is removed by
+   * clicking again. It used to answer with "already bookmarked" and do nothing,
+   * so the only way to undo a mistaken save was the start page's edit mode —
+   * which is exactly where the user was not.
+   */
   const handleBookmarkCurrent = () => {
     const url = activeTab.url?.trim();
     if (!url) return;
     if (url.toLowerCase().includes('/lucid-start-page/index.html')) return;
-    const title = (activeTab.title || activeTab.url || 'New Bookmark').trim();
-    window.dispatchEvent(new CustomEvent('diviewer:bookmark-added', { detail: { url, title } }));
-    void run(() => hostBridge.saveBookmark(url, title), 'save_bookmark', 2500);
+    if (isBookmarked) {
+      // Unlight it right away. The write also comes back through the host
+      // broadcast, but that round trip is visible as a flicker in the button.
+      setSnapshot((current) => ({
+        ...current,
+        state: {
+          ...current.state,
+          bookmarks: current.state.bookmarks.filter((item) => !samePage(item.url, url))
+        }
+      }));
+      setToastMessage(I18N[uiLang].bookmarkRemoved);
+      void run(() => hostBridge.removeBookmark(url), 'remove_bookmark', 2500);
+    } else {
+      const title = (activeTab.title || activeTab.url || 'New Bookmark').trim();
+      window.dispatchEvent(new CustomEvent('diviewer:bookmark-added', { detail: { url, title } }));
+      void run(() => hostBridge.saveBookmark(url, title), 'save_bookmark', 2500);
+      setToastMessage(I18N[uiLang].bookmarkSaved);
+    }
+    window.setTimeout(() => setToastMessage(null), 2000);
+  };
+  /**
+   * Saving a home address can be rejected (not an http(s) URL). That is a
+   * user-visible mistake, not a bridge failure, so it goes to the toast instead
+   * of the "control bridge unavailable" card that `run` raises.
+   */
+  const handleSaveStartPage = (next: string) => {
+    void (async () => {
+      try {
+        const config = await hostBridge.setStartPage(next);
+        setSnapshot((current) => ({
+          ...current,
+          state: { ...current.state, startPageUrl: config.url, startPageBuiltin: config.builtin }
+        }));
+        setToastMessage(I18N[uiLang].startPageSaved);
+        void syncSnapshot();
+      } catch {
+        setToastMessage(I18N[uiLang].startPageInvalid);
+      }
+      window.setTimeout(() => setToastMessage(null), 2400);
+    })();
   };
   const shellOpen = snapshot.state.sidebarVisible;
   const viewport = useViewport();
   const compact = viewport.width < 760;
+  // The rail and the toolbar are one tier table now (`chromeMetrics.ts`):
+  // three steps keep their share of the window roughly constant without
+  // animating on every pixel of a drag. `railWidth` must stay equal to
+  // `--diviewer-inset-left` below — that is the page's padding, and a mismatch
+  // either hides content under the rail or leaves a strip of dead space.
+  const chrome = useMemo(() => chromeMetricsFor(viewport.width), [viewport.width]);
+  const railWidth = chrome.rail;
   useEffect(() => {
-    // The native bootstrap insets the page before the first paint; keep it in
-    // sync when the shell collapses into its handle (the page then owns the
-    // full window again).
+    // The native bootstrap insets the page before the first paint with the same
+    // tier table; keep it in sync when the shell collapses into its handle (the
+    // page then owns the full window again) and when the tier itself changes.
     const style = document.documentElement.style;
-    style.setProperty('--diviewer-inset-top', `${shellOpen ? SHELL_CHROME_HEIGHT : 0}px`);
-    style.setProperty('--diviewer-inset-left', `${shellOpen ? SHELL_SIDEBAR_WIDTH : 0}px`);
-  }, [shellOpen]);
+    style.setProperty('--diviewer-inset-top', `${shellOpen ? chrome.height : 0}px`);
+    style.setProperty('--diviewer-inset-left', `${shellOpen ? railWidth : 0}px`);
+  }, [shellOpen, railWidth, chrome.height]);
   return (
     <div className={`diviewer-host-root ${isDarkMode ? 'dark' : ''}`}>
       <div className="relative h-full w-full overflow-hidden pointer-events-none">
@@ -421,6 +575,7 @@ export default function App() {
             dockColor={snapshot.dockColor}
             isDarkMode={isDarkMode}
             onBookmarksClick={handleBookmarkCurrent}
+            isBookmarked={isBookmarked}
             onSettingsClick={() => setIsMenuOpen((open) => !open)}
             isPinned={snapshot.state.onTop}
             onTogglePin={() => void run(() => hostBridge.toggleOnTop(), 'toggle_on_top', 2500)}
@@ -430,6 +585,7 @@ export default function App() {
             onMediaAction={(action) => void run(() => hostBridge.videoAction(action), `video:${action}`, 2500)}
             lang={uiLang}
             dense={viewport.height < 560}
+            railWidth={railWidth}
           />
           <div className="relative z-0 flex h-full min-w-0 flex-1 flex-col overflow-hidden pointer-events-none">
             <BrowserView
@@ -445,13 +601,27 @@ export default function App() {
               onRefresh={() => void run(() => hostBridge.refreshPage(), 'refresh', 3000)}
               lang={uiLang}
               compact={compact}
+              chrome={chrome}
+              startPageUrl={snapshot.state.startPageUrl}
             />
           </div>
-          {toastMessage && (
-            <div className="pointer-events-none fixed bottom-3 right-3 z-[2147483647] rounded-xl border border-slate-200/70 bg-white/80 px-3 py-2 text-xs text-slate-700 shadow-sm backdrop-blur dark:border-zinc-800 dark:bg-zinc-900/80 dark:text-slate-200">
-              {toastMessage}
-            </div>
-          )}
+          <AnimatePresence>
+            {toastMessage && (
+              <motion.div
+                key={toastMessage}
+                initial={{ opacity: 0, y: 10, filter: 'blur(6px)' }}
+                animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                exit={{ opacity: 0, y: 6, filter: 'blur(6px)' }}
+                transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                className="pointer-events-none fixed bottom-3 right-3 z-[2147483647] overflow-hidden rounded-xl border border-white/60 bg-white/70 px-3 py-2 text-xs font-medium text-slate-700 shadow-[0_8px_30px_rgba(15,23,42,0.12)] backdrop-blur-md dark:border-white/10 dark:bg-zinc-900/70 dark:text-slate-100 dark:shadow-[0_8px_30px_rgba(0,0,0,0.55)]"
+              >
+                {/* A hairline of light along the top edge: enough to read as a
+                    raised surface without a second border colour. */}
+                <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/70 to-transparent dark:via-white/25" />
+                {toastMessage}
+              </motion.div>
+            )}
+          </AnimatePresence>
           {bridgeError && (
             <div className="pointer-events-auto fixed right-3 top-3 z-[2147483647] max-w-[360px] rounded-2xl border border-rose-200/80 bg-white/95 p-3 text-sm text-slate-700 shadow-lg shadow-rose-950/10 backdrop-blur dark:border-rose-900/70 dark:bg-zinc-950/95 dark:text-slate-200">
               <div className="font-semibold text-rose-700 dark:text-rose-300">{I18N[uiLang].bridgeErrorTitle}</div>
@@ -473,8 +643,8 @@ export default function App() {
                 onClose={() => setIsMenuOpen(false)}
                 opacity={Math.round(snapshot.state.opacity * 100)}
                 setOpacity={applyOpacityPercent}
-                isDarkMode={isDarkMode}
-                onToggleDarkMode={() => setIsDarkMode(!isDarkMode)}
+                themeMode={themeMode}
+                onThemeModeChange={applyThemeChoice}
                 onToggleSidebar={() => void runAndCloseMenu(() => hostBridge.toggleSidebar(), 2500)}
                 onQuit={() => void runAndCloseMenu(() => hostBridge.closeApp(), 2500)}
                 hotkeys={snapshot.state.hotkeys}
@@ -511,6 +681,9 @@ export default function App() {
                 hotkeysEnabled={snapshot.state.hotkeysEnabled}
                 onToggleHotkeysEnabled={handleToggleHotkeysEnabled}
                 onRescueWindow={handleRescueWindow}
+                startPageUrl={snapshot.state.startPageUrl}
+                isStartPageBuiltin={snapshot.state.startPageBuiltin}
+                onSaveStartPage={handleSaveStartPage}
               />
               </>
             )}

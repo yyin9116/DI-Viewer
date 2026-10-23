@@ -58,7 +58,16 @@
   --color-tab-idle: #5f6b7d;
 }
 
-.dark {
+/*
+ * `.dark` is the React root inside the shadow tree; `:host([data-theme])` is the
+ * same choice expressed on the host, which is what the pre-React placeholder
+ * chrome reads. Both have to carry the dark values — the placeholders are
+ * siblings of the React root, not descendants, so `.dark` alone never reached
+ * them and the rail placeholder stayed white while a dark rail sprang open over
+ * it (the white flash users saw mid-expand).
+ */
+.dark,
+:host([data-theme="dark"]) {
   --color-chrome: #000000;
   --color-chrome-strip: #101014;
   --color-chrome-line: #2a2a30;
@@ -88,6 +97,24 @@
   letter-spacing: 0;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+
+  /*
+   * Tailwind composes `box-shadow` out of five custom properties and leans on
+   * `@property` registrations for the four companions (`--tw-inset-shadow`,
+   * `--tw-inset-ring-shadow`, `--tw-ring-offset-shadow`, `--tw-ring-shadow`).
+   * Registration is document-scoped and @property rules inside a shadow tree
+   * are dropped, so those four resolved to nothing and the whole `box-shadow`
+   * declaration was invalid-at-computed-value-time: every `shadow-*` and
+   * `ring-*` in the injected shell rendered as `none`. The card had no depth,
+   * the collapse handle had no halo, focus rings were invisible.
+   *
+   * Declaring the no-op defaults on the host restores the composition; the
+   * utilities still override each variable on the element that asks for it.
+   */
+  --tw-inset-shadow: 0 0 #0000;
+  --tw-inset-ring-shadow: 0 0 #0000;
+  --tw-ring-offset-shadow: 0 0 #0000;
+  --tw-ring-shadow: 0 0 #0000;
 }
 
 /*
@@ -176,6 +203,24 @@ body {
     outline: 2px solid var(--color-brand-500);
     outline-offset: 2px;
   }
+
+  /*
+   * Press feedback for chrome controls only. Rows inside the settings panel are
+   * full-width list items, and shrinking those reads as a layout glitch rather
+   * than as touch feedback, so this is scoped to the rail and the toolbar.
+   * Utilities still win where a button sets its own transform.
+   */
+  .chrome-surface button {
+    transition:
+      transform 0.14s cubic-bezier(0.22, 1, 0.36, 1),
+      background-color 0.16s ease,
+      color 0.16s ease,
+      box-shadow 0.16s ease;
+  }
+
+  .chrome-surface button:active:not(:disabled) {
+    transform: scale(0.94);
+  }
 }
 
 .scrollbar-hide {
@@ -185,6 +230,37 @@ body {
 
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
+}
+
+/*
+ * Settings panel body. The panel's height is capped below the chrome, so the
+ * long tabs (快捷键 has twelve rows) really do scroll now. A hidden bar plus a
+ * clipped half-row used to read as a paint bug; a 8px thumb that only shows on
+ * hover of the track keeps it quiet without lying about the overflow.
+ */
+.mm-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.32) transparent;
+  overscroll-behavior: contain;
+}
+
+.mm-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.mm-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mm-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-color: rgba(100, 116, 139, 0.32);
+  background-clip: content-box;
+}
+
+.mm-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(100, 116, 139, 0.52);
 }
 
 .diviewer-host-root {
@@ -211,6 +287,25 @@ body {
   box-sizing: border-box;
   background: var(--color-chrome);
   border-right: 1px solid var(--color-chrome-line);
+}
+
+/*
+ * They must disappear the moment React owns the chrome. Leaving them underneath
+ * produced two visible defects:
+ *  - collapsed rail: the placeholder is `width: 0` but keeps its 1px right
+ *    border, so a 1px light line stayed pinned to the window edge;
+ *  - expanding in dark mode: the placeholder appears at its final width the
+ *    instant the flag flips, so the full-size panel showed *before* the spring
+ *    animation ran — a solid block where the rail should be growing.
+ */
+:host([data-shell-ready="true"]) #__diviewer_chrome_rail__,
+:host([data-shell-ready="true"]) #__diviewer_chrome_frame__ {
+  display: none;
+}
+
+/* Before React reports ready, a collapsed rail must not draw either. */
+:host([data-sidebar-visible="false"]) #__diviewer_chrome_rail__ {
+  display: none;
 }
 
 .diviewer-host-root * {

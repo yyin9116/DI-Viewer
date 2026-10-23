@@ -17,21 +17,25 @@ import {
   LifeBuoy,
   Pin,
   ShieldAlert,
-  Check
+  Check,
+  Home,
+  Monitor
 } from 'lucide-react';
-import type { HotkeyConfig } from '../types';
+import type { HotkeyConfig, ThemeMode } from '../types';
 import { bindingHasModifier, bindingIsTypingSafe } from '../lib/inAppHotkeys';
 import { useViewport } from '../lib/useViewport';
+import { chromeMetricsFor } from '../lib/chromeMetrics';
 
 type UILang = 'zh' | 'en';
-type MenuView = 'appearance' | 'window' | 'shortcuts' | 'recovery';
+type MenuView = 'appearance' | 'startpage' | 'window' | 'shortcuts' | 'recovery';
 
 interface MainMenuProps {
   onClose: () => void;
   opacity: number;
   setOpacity: (val: number) => void;
-  isDarkMode: boolean;
-  onToggleDarkMode: () => void;
+  /** The user's choice, not the resolved theme — `system` is a real option. */
+  themeMode: ThemeMode;
+  onThemeModeChange: (mode: ThemeMode) => void;
   onToggleSidebar: () => void;
   onQuit: () => void;
   hotkeys: HotkeyConfig;
@@ -53,6 +57,11 @@ interface MainMenuProps {
   onToggleHotkeysEnabled: (enabled: boolean) => void;
   onRescueWindow: () => void;
   onAbout: () => void;
+  /** Effective home address (built-in page or a user-chosen one). */
+  startPageUrl: string;
+  isStartPageBuiltin: boolean;
+  /** Empty string restores the built-in start page. */
+  onSaveStartPage: (url: string) => void;
 }
 
 /// Fixed by the backend: registered even when the global hotkey master switch
@@ -65,6 +74,7 @@ const TEXT = {
     settings: '设置',
     tabs: {
       appearance: '外观',
+      startpage: '首页',
       window: '窗口',
       shortcuts: '快捷键',
       recovery: '恢复'
@@ -73,9 +83,18 @@ const TEXT = {
     theme: '主题',
     light: '浅色',
     dark: '深色',
+    system: '跟随系统',
     language: '语言',
     zh: '中文',
     en: 'English',
+    startPage: '起始页',
+    startPageHint: '新标签页、关闭最后一个标签、以及启动时都打开这个地址。',
+    startPageBuiltin: '内置起始页',
+    startPageLime: '青柠起始页',
+    startPageCustom: '自定义',
+    startPagePlaceholder: '例如 limestart.cn',
+    startPageSave: '保存',
+    startPageCurrent: '当前',
     opacity: '界面透明度',
     opacityHint: `最低 20%。调低到看不清时，按 ${RESCUE_HOTKEY} 立刻找回窗口。`,
     windowSection: '窗口行为',
@@ -135,6 +154,7 @@ const TEXT = {
     settings: 'Settings',
     tabs: {
       appearance: 'Look',
+      startpage: 'Home',
       window: 'Window',
       shortcuts: 'Keys',
       recovery: 'Recovery'
@@ -143,9 +163,18 @@ const TEXT = {
     theme: 'Theme',
     light: 'Light',
     dark: 'Dark',
+    system: 'Auto',
     language: 'Language',
     zh: '中文',
     en: 'English',
+    startPage: 'Start page',
+    startPageHint: 'New tabs, closing the last tab, and launch all open this address.',
+    startPageBuiltin: 'Built-in',
+    startPageLime: 'Limestart',
+    startPageCustom: 'Custom',
+    startPagePlaceholder: 'e.g. limestart.cn',
+    startPageSave: 'Save',
+    startPageCurrent: 'Now',
     opacity: 'Shell opacity',
     opacityHint: `Floor is 20%. If it gets too faint, press ${RESCUE_HOTKEY} to bring the window back.`,
     windowSection: 'Window behaviour',
@@ -240,6 +269,17 @@ const HOTKEY_LABELS: Record<UILang, Record<keyof HotkeyConfig, string>> = {
   }
 };
 
+/// Limestart (青柠起始页) — the home page earlier builds of the viewer shipped
+/// with. Kept as a one-click preset because it is what this app was for.
+const LIMESTART_HOME = 'https://limestart.cn/';
+
+/** Same page, ignoring a trailing slash and letter case. */
+function sameAddress(left: string, right: string): boolean {
+  const clean = (value: string) => value.trim().toLowerCase().replace(/\/+$/, '');
+  const a = clean(left);
+  return a !== '' && a === clean(right);
+}
+
 const MODIFIER_NAMES = new Set(['Control', 'Shift', 'Alt', 'Meta']);
 
 function normalizeRecordedKey(event: React.KeyboardEvent<HTMLInputElement>): string | null {
@@ -306,8 +346,8 @@ export function MainMenu({
   onClose,
   opacity,
   setOpacity,
-  isDarkMode,
-  onToggleDarkMode,
+  themeMode,
+  onThemeModeChange,
   onToggleSidebar,
   onQuit,
   hotkeys,
@@ -327,13 +367,19 @@ export function MainMenu({
   hotkeysEnabled,
   onToggleHotkeysEnabled,
   onRescueWindow,
-  onAbout
+  onAbout,
+  startPageUrl,
+  isStartPageBuiltin,
+  onSaveStartPage
 }: MainMenuProps) {
   const [view, setView] = useState<MenuView>('appearance');
   const [editingHotkeys, setEditingHotkeys] = useState<HotkeyConfig>(hotkeys);
   const [recordingKey, setRecordingKey] = useState<keyof HotkeyConfig | null>(null);
   const [recordError, setRecordError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  /** "Custom" only reveals the field — nothing is written until Save. */
+  const [customOpen, setCustomOpen] = useState(false);
+  const [startDraft, setStartDraft] = useState('');
   const inputRefs = useRef<Partial<Record<keyof HotkeyConfig, HTMLInputElement | null>>>({});
   const t = TEXT[lang];
   const labels = HOTKEY_LABELS[lang];
@@ -349,11 +395,42 @@ export function MainMenu({
    */
   const dense = viewport.height < 560;
 
+  /*
+   * The panel is bottom-anchored to the rail (bottom-3 / bottom-6), so it grows
+   * *upwards*. A flat `100vh - 40px` cap let the 快捷键 tab reach 700px tall in a
+   * 740px window and slide the header over the toolbar — the panel then looked
+   * like it was floating on top of the address bar. The cap has to reserve the
+   * chrome above it as well, and that height is tier-dependent, so it comes from
+   * the same table the toolbar and the tab strip are built from.
+   */
+  const chromeHeight = chromeMetricsFor(viewport.width).height;
+  const panelLimit = Math.max(240, viewport.height - chromeHeight - (dense ? 12 : 24) - 8);
+
   useEffect(() => {
     setEditingHotkeys(hotkeys);
     setRecordingKey(null);
     setRecordError(null);
   }, [hotkeys]);
+
+  // Which preset the current home matches. Derived rather than stored: the host
+  // canonicalises whatever was typed ("limestart.cn" -> "https://limestart.cn/"),
+  // so the panel has to read the stored value back instead of remembering what
+  // was clicked.
+  const startPreset: 'builtin' | 'lime' | 'custom' = isStartPageBuiltin
+    ? 'builtin'
+    : sameAddress(startPageUrl, LIMESTART_HOME)
+      ? 'lime'
+      : 'custom';
+  const activeStartPreset = customOpen ? 'custom' : startPreset;
+
+  useEffect(() => {
+    setStartDraft(isStartPageBuiltin ? '' : startPageUrl);
+    setCustomOpen(false);
+  }, [startPageUrl, isStartPageBuiltin]);
+
+  const submitStartPage = (value: string) => {
+    onSaveStartPage(value.trim());
+  };
 
   /** Bindings the OS refused because another application already owns them.
    *  Shown per-row so a dead shortcut is never silently dead. */
@@ -413,34 +490,59 @@ export function MainMenu({
     setRecordError(null);
   };
 
+  // Icon-only navigation. The labels were 5 words of Chinese inside a 368px
+  // panel: they ate the row the settings actually need, and every one of them
+  // is already a familiar glyph. The name lives in `title`/`aria-label`, so it
+  // still reads out and still answers a hover.
   const tabs: Array<{ id: MenuView; label: string; icon: React.ReactNode }> = [
-    { id: 'appearance', label: t.tabs.appearance, icon: <Sun size={13} /> },
-    { id: 'window', label: t.tabs.window, icon: <Layout size={13} /> },
-    { id: 'shortcuts', label: t.tabs.shortcuts, icon: <Keyboard size={13} /> },
-    { id: 'recovery', label: t.tabs.recovery, icon: <LifeBuoy size={13} /> }
+    { id: 'appearance', label: t.tabs.appearance, icon: <Sun size={15} /> },
+    { id: 'startpage', label: t.tabs.startpage, icon: <Home size={15} /> },
+    { id: 'window', label: t.tabs.window, icon: <Layout size={15} /> },
+    { id: 'shortcuts', label: t.tabs.shortcuts, icon: <Keyboard size={15} /> },
+    { id: 'recovery', label: t.tabs.recovery, icon: <LifeBuoy size={15} /> }
   ];
+  /** Which way the body should slide: following the tab order reads as motion, not as a jump cut. */
+  const viewIndex = tabs.findIndex((tab) => tab.id === view);
+  const previousView = useRef(viewIndex);
+  const slideDirection = viewIndex >= previousView.current ? 1 : -1;
+  useEffect(() => {
+    previousView.current = viewIndex;
+  }, [viewIndex]);
 
-  // `calc(100vh-40px)` is not valid CSS: without spaces around the minus the
-  // whole declaration is dropped, so the panel had no max height at all and ran
-  // straight off the bottom of a 480px-tall window. Underscores are Tailwind's
-  // way of writing those spaces. The dense variant also trims the bottom gap so
-  // the panel can claim 24px more height.
+  // The height cap is inline (see `panelLimit`) rather than a Tailwind arbitrary
+  // value: `calc(100vh-40px)` without spaces is invalid CSS and silently drops
+  // the declaration, which is what once let the panel run off a 480px window.
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.97, y: 12 }}
-      animate={{ opacity: 1, scale: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.97, y: 12 }}
+      initial={{ opacity: 0, scale: 0.97, y: 12, filter: 'blur(10px)' }}
+      animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
+      exit={{ opacity: 0, scale: 0.98, y: 8, filter: 'blur(8px)', transition: { duration: 0.16 } }}
       transition={{ type: 'spring', damping: 30, stiffness: 340 }}
       style={
         {
           '--mm-row-h': dense ? '40px' : '44px',
-          '--mm-row-y': dense ? '8px' : '10px'
+          '--mm-row-y': dense ? '8px' : '10px',
+          maxHeight: panelLimit
         } as React.CSSProperties
       }
       className={`pointer-events-auto absolute left-24 z-[2147483647] flex w-[368px] flex-col overflow-hidden rounded-[26px] border border-[#D6DEEA] bg-[#F3F6FB] shadow-[0_24px_64px_-16px_rgba(15,23,42,0.28)] backdrop-blur-2xl dark:border-[#272727] dark:bg-[#0B0B0D] ${
-        dense ? 'bottom-3 max-h-[calc(100vh_-_24px)]' : 'bottom-6 max-h-[calc(100vh_-_40px)]'
+        dense ? 'bottom-3' : 'bottom-6'
       }`}
     >
+      {/* Depth wash — two very low-alpha radial blooms behind the content.
+          Static on purpose: the shell exists in every parked tab, and an
+          infinite animation there would keep painting frames nobody sees. */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[26px]" aria-hidden="true">
+        {/* Glass edge — a 1px gradient that catches light along the top rim.
+            Static, like the blooms: this shell lives in every parked tab too. */}
+        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-teal-400/50 to-transparent dark:via-teal-300/40" />
+        {/* Light needs a much weaker wash than dark: the panel is already a
+            cool translucent grey there, and a 10% teal bloom over it reads as
+            a dirty smudge rather than a glow. */}
+        <div className="absolute -left-12 -top-20 h-48 w-48 rounded-full bg-teal-400/[0.06] blur-3xl dark:bg-teal-400/[0.14]" />
+        <div className="absolute -right-16 top-12 h-44 w-44 rounded-full bg-indigo-400/[0.05] blur-3xl dark:bg-indigo-400/[0.12]" />
+      </div>
+
       {/* Header */}
       <div className={`flex shrink-0 items-start justify-between px-4 ${dense ? 'pt-3' : 'pt-4'}`}>
         <div>
@@ -477,46 +579,61 @@ export function MainMenu({
               key={tab.id}
               type="button"
               onClick={() => setView(tab.id)}
-              className={`flex h-7 flex-1 items-center justify-center gap-1 whitespace-nowrap rounded-lg text-[12px] leading-none transition-colors ${
+              title={tab.label}
+              aria-label={tab.label}
+              aria-current={active ? 'page' : undefined}
+              className={`relative flex h-7 flex-1 items-center justify-center rounded-lg transition-colors duration-200 ${
                 active
-                  ? 'bg-white font-semibold text-slate-900 dark:bg-zinc-800 dark:text-white'
-                  : 'font-normal text-[#5B6470] hover:text-[#1F2937] dark:text-zinc-400 dark:hover:text-white'
+                  ? 'text-slate-900 dark:text-white'
+                  : 'text-[#5B6470] hover:text-[#1F2937] dark:text-zinc-400 dark:hover:text-white'
               }`}
             >
-              {tab.icon}
-              {tab.label}
+              {/* One shared pill that slides between tabs: the motion is what
+                  makes a five-way switch read as continuous instead of five
+                  separate repaints. */}
+              {active && (
+                <motion.span
+                  layoutId="mm-nav-pill"
+                  transition={{ type: 'spring', damping: 32, stiffness: 420, mass: 0.7 }}
+                  className="absolute inset-0 rounded-lg bg-white shadow-[0_1px_3px_rgba(15,23,42,0.12)] dark:bg-zinc-800 dark:shadow-[0_1px_3px_rgba(0,0,0,0.4)]"
+                />
+              )}
+              <span className="relative flex items-center justify-center">{tab.icon}</span>
             </button>
           );
         })}
       </div>
 
-      {/* Body */}
-      <div className={`min-h-0 flex-1 overflow-y-auto scrollbar-hide ${dense ? 'px-3.5 py-3' : 'px-4 py-4'}`}>
+      {/* Body — `mm-scroll` keeps a slim visible bar: the capped panel does
+          overflow on the 快捷键 tab now, and with the bar hidden a half-cut row
+          reads as a rendering bug instead of "scroll for more". */}
+      <div className={`mm-scroll min-h-0 flex-1 overflow-y-auto ${dense ? 'px-3.5 py-3' : 'px-4 py-4'}`}>
         <AnimatePresence mode="wait" initial={false}>
           {view === 'appearance' && (
             <motion.div
               key="appearance"
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.14 }}
+              initial={{ opacity: 0, x: slideDirection * 14 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: slideDirection * -10, transition: { duration: 0.1 } }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
               className={dense ? 'space-y-2.5' : 'space-y-3.5'}
             >
               <Card>
                 <Row label={t.theme}>
                   <Segmented
-                    value={isDarkMode ? 'dark' : 'light'}
+                    layoutId="mm-theme"
+                    value={themeMode}
                     options={[
                       { id: 'light', label: t.light, icon: <Sun size={12} /> },
-                      { id: 'dark', label: t.dark, icon: <Moon size={12} /> }
+                      { id: 'dark', label: t.dark, icon: <Moon size={12} /> },
+                      { id: 'system', label: t.system, icon: <Monitor size={12} /> }
                     ]}
-                    onChange={(next) => {
-                      if ((next === 'dark') !== isDarkMode) onToggleDarkMode();
-                    }}
+                    onChange={onThemeModeChange}
                   />
                 </Row>
                 <Row label={t.language} last>
                   <Segmented
+                    layoutId="mm-lang"
                     value={lang}
                     options={[
                       { id: 'zh', label: t.zh },
@@ -555,13 +672,87 @@ export function MainMenu({
             </motion.div>
           )}
 
+          {view === 'startpage' && (
+            <motion.div
+              key="startpage"
+              initial={{ opacity: 0, x: slideDirection * 14 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: slideDirection * -10, transition: { duration: 0.1 } }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
+              className={dense ? 'space-y-2.5' : 'space-y-3.5'}
+            >
+              <Card>
+                <div className="px-3.5 pb-3.5 pt-3">
+                  <div className="flex items-baseline gap-2">
+                    <span className="shrink-0 text-[13px] text-[#1F2937] dark:text-zinc-100">{t.startPage}</span>
+                    <span className="ml-auto flex min-w-0 items-baseline gap-1">
+                      <span className="shrink-0 text-[11px] text-[#5B6470] dark:text-zinc-400">{t.startPageCurrent}</span>
+                      <span className="truncate font-mono text-[11px] text-[#1F2937] dark:text-zinc-200">
+                        {isStartPageBuiltin ? t.startPageBuiltin : startPageUrl}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="mt-2">
+                    <Segmented
+                      value={activeStartPreset}
+                      options={[
+                        { id: 'builtin', label: t.startPageBuiltin },
+                        { id: 'lime', label: t.startPageLime },
+                        { id: 'custom', label: t.startPageCustom }
+                      ]}
+                      onChange={(next) => {
+                        // The two presets commit immediately - they are complete
+                        // addresses. "Custom" only reveals the field, because
+                        // saving half-typed input would be worse than nothing.
+                        if (next === 'builtin') {
+                          setCustomOpen(false);
+                          submitStartPage('');
+                          return;
+                        }
+                        if (next === 'lime') {
+                          setCustomOpen(false);
+                          submitStartPage(LIMESTART_HOME);
+                          return;
+                        }
+                        setCustomOpen(true);
+                      }}
+                    />
+                  </div>
+                  {activeStartPreset === 'custom' && (
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={startDraft}
+                        onChange={(e) => setStartDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') submitStartPage(startDraft);
+                        }}
+                        placeholder={t.startPagePlaceholder}
+                        spellCheck={false}
+                        className="h-8 min-w-0 flex-1 rounded-lg border border-[#D6DEEA] bg-white px-2.5 text-[12px] text-[#1F2937] outline-none placeholder:text-[#9AA5B1] focus:border-brand-700 dark:border-[#272727] dark:bg-[#0F0F12] dark:text-zinc-100 dark:focus:border-brand-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => submitStartPage(startDraft)}
+                        className="h-8 shrink-0 rounded-lg bg-brand-700 px-3 text-[12px] font-medium text-white transition-opacity hover:opacity-90 dark:bg-brand-400 dark:text-zinc-900"
+                      >
+                        {t.startPageSave}
+                      </button>
+                    </div>
+                  )}
+                  <p className="mt-2 text-[12px] leading-[1.5] text-[#5B6470] dark:text-zinc-400">{t.startPageHint}</p>
+                </div>
+              </Card>
+            </motion.div>
+          )}
+
           {view === 'window' && (
             <motion.div
               key="window"
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.14 }}
+              initial={{ opacity: 0, x: slideDirection * 14 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: slideDirection * -10, transition: { duration: 0.1 } }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
               className={dense ? 'space-y-2.5' : 'space-y-3.5'}
             >
               <Card>
@@ -621,10 +812,10 @@ export function MainMenu({
           {view === 'shortcuts' && (
             <motion.div
               key="shortcuts"
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.14 }}
+              initial={{ opacity: 0, x: slideDirection * 14 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: slideDirection * -10, transition: { duration: 0.1 } }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
               className={dense ? 'space-y-2.5' : 'space-y-3.5'}
             >
               <Card>
@@ -756,10 +947,10 @@ export function MainMenu({
           {view === 'recovery' && (
             <motion.div
               key="recovery"
-              initial={{ opacity: 0, y: 4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.14 }}
+              initial={{ opacity: 0, x: slideDirection * 14 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: slideDirection * -10, transition: { duration: 0.1 } }}
+              transition={{ duration: 0.22, ease: 'easeOut' }}
               className={dense ? 'space-y-2.5' : 'space-y-3.5'}
             >
               <div className="rounded-[14px] border border-brand-500/25 bg-brand-500/[0.07] p-3.5 dark:border-brand-500/30 dark:bg-brand-500/10">
@@ -1131,11 +1322,18 @@ function RecoveryRow({
 function Segmented<T extends string>({
   value,
   options,
-  onChange
+  onChange,
+  layoutId
 }: {
   value: T;
   options: Array<{ id: T; label: string; icon?: React.ReactNode }>;
   onChange: (next: T) => void;
+  /**
+   * Shared `layoutId` for the selected pill, so it slides between options
+   * instead of blinking. Must be unique per instance — two segmented controls
+   * sharing an id would fly into each other.
+   */
+  layoutId?: string;
 }) {
   return (
     <div className="flex shrink-0 gap-0.5 rounded-lg bg-black/[0.05] p-0.5 dark:bg-white/[0.07]">
@@ -1146,14 +1344,23 @@ function Segmented<T extends string>({
             key={option.id}
             type="button"
             onClick={() => onChange(option.id)}
-            className={`flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] font-medium leading-4 transition-colors ${
+            className={`relative flex items-center gap-1 rounded-[6px] px-2 py-1 text-[11px] font-medium leading-4 transition-colors duration-200 ${
               active
-                ? 'bg-white text-slate-900 shadow-sm dark:bg-zinc-700 dark:text-white'
+                ? 'text-slate-900 dark:text-white'
                 : 'text-[#5B6470] hover:text-[#1F2937] dark:text-zinc-400 dark:hover:text-white'
             }`}
           >
-            {option.icon}
-            {option.label}
+            {active && (
+              <motion.span
+                layoutId={layoutId}
+                transition={{ type: 'spring', damping: 34, stiffness: 460, mass: 0.6 }}
+                className="absolute inset-0 rounded-[6px] bg-white shadow-[0_1px_3px_rgba(15,23,42,0.14)] dark:bg-zinc-700 dark:shadow-[0_1px_3px_rgba(0,0,0,0.45)]"
+              />
+            )}
+            <span className="relative flex items-center gap-1">
+              {option.icon}
+              {option.label}
+            </span>
           </button>
         );
       })}

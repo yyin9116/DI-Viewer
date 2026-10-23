@@ -18,6 +18,13 @@ interface SidebarProps {
   dockColor: 'white' | 'ivory' | 'amber' | 'blue' | 'green' | 'rose' | 'slate';
   isDarkMode: boolean;
   onBookmarksClick: () => void;
+  /**
+   * Whether the page in the active tab is already in the bookmark list. The
+   * button is the only feedback the action has - saving writes to the host and
+   * the start page is a different webview - so without this the click looked
+   * like it did nothing at all.
+   */
+  isBookmarked: boolean;
   onSettingsClick: () => void;
   isPinned: boolean;
   onTogglePin: () => void;
@@ -28,6 +35,15 @@ interface SidebarProps {
   lang: UILang;
   /** Short window (e.g. the 1/3 preset): tighten the rail so nothing clips. */
   dense: boolean;
+  /**
+   * Rail width in px, chosen from the viewport width by the caller. The rail
+   * used to be a hard `w-20`: narrowing the window left an 80px column and
+   * 56px buttons on a 600px-wide window, and the icons never shrank. Every
+   * child is sized off this one number now (buttons, logo, icons), so the
+   * whole rail scales as a unit. `--diviewer-inset-left` must be kept equal to
+   * it, or the page underneath is padded for a rail that is no longer there.
+   */
+  railWidth: number;
 }
 
 const TEXT = {
@@ -35,6 +51,7 @@ const TEXT = {
     expand: '\u5c55\u5f00\u4fa7\u8fb9\u680f',
     collapse: '\u6536\u8d77\u4fa7\u8fb9\u680f',
     bookmarks: '\u6536\u85cf',
+    bookmarked: '\u53d6\u6d88\u6536\u85cf',
     prev: '\u540e\u9000 5 \u79d2',
     play: '\u64ad\u653e/\u6682\u505c',
     next: '\u524d\u8fdb 5 \u79d2',
@@ -46,7 +63,8 @@ const TEXT = {
   en: {
     expand: 'Expand sidebar',
     collapse: 'Collapse sidebar',
-    bookmarks: 'Bookmarks',
+    bookmarks: 'Bookmark',
+    bookmarked: 'Remove bookmark',
     prev: 'Back 5s',
     play: 'Play/Pause',
     next: 'Forward 5s',
@@ -57,8 +75,12 @@ const TEXT = {
   }
 } as const;
 
-export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, onSettingsClick, isPinned, onTogglePin, isOpen, onToggle, onFullscreenClick, onMediaAction, lang, dense }: SidebarProps) {
+export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, isBookmarked, onSettingsClick, isPinned, onTogglePin, isOpen, onToggle, onFullscreenClick, onMediaAction, lang, dense, railWidth }: SidebarProps) {
   const t = TEXT[lang];
+  // Icons ride along with the rail: 22px on the 80px rail it was tuned for,
+  // and proportionally smaller below that. Rounded so the SVG box stays on a
+  // whole pixel and 1x renders stay crisp.
+  const iconSize = Math.max(14, Math.round(railWidth * 0.275));
 
   return (
     <>
@@ -75,26 +97,30 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
         onClick={onToggle}
         title={t.expand}
       >
-        <div className={`h-14 w-1.5 rounded-full ring-1 backdrop-blur-sm transition-all duration-300 group-hover:h-16 group-hover:w-[7px] ${isDarkMode ? 'bg-white/95 ring-white/45 shadow-[0_10px_24px_rgba(0,0,0,0.45)]' : 'bg-black/90 ring-black/30 shadow-[0_8px_20px_rgba(15,23,42,0.28)]'}`} />
+        <div className={`h-14 w-1.5 rounded-full transition-all duration-300 group-hover:h-16 group-hover:w-[7px] ${
+          isDarkMode
+            ? // White core, dark halo: reads on both the black chrome and a white
+              // page, which is where the old single `ring` disappeared.
+              'bg-white/95 shadow-[0_10px_24px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.35),0_0_0_2.5px_rgba(0,0,0,0.32)]'
+            : 'bg-black/90 shadow-[0_8px_20px_rgba(15,23,42,0.28),0_0_0_1px_rgba(0,0,0,0.28),0_0_0_2.5px_rgba(255,255,255,0.6)]'
+        }`} />
       </motion.button>
 
       <motion.div
         initial={false}
         animate={{
-          width: isOpen ? 80 : 0,
+          width: isOpen ? railWidth : 0,
         }}
         transition={{ type: 'spring', damping: 30, stiffness: 320 }}
-        className="pointer-events-auto relative h-full shrink-0 overflow-hidden z-[2147483646]"
+        style={{ '--rail-w': `${railWidth}px`, '--rail-icon': `${iconSize}px` } as React.CSSProperties}
+        className="pointer-events-auto relative h-full shrink-0 overflow-hidden z-[2147483646] chrome-surface"
       >
-        {/* The surface is painted on the inner panel, never on the box that
-            animates 80px -> 0px: a background/border on the shrinking box
-            survives the spring as a 1-2px white sliver for a few frames. */}
-        <motion.div
-          initial={false}
-          animate={{ x: isOpen ? 0 : -48, opacity: isOpen ? 1 : 0 }}
-          transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
-          className="absolute inset-y-0 left-0 w-20 border-r border-chrome-line bg-chrome"
-        />
+        {/* The surface does NOT animate: it is clipped by the box above.
+            Animating its own x/opacity meant that while the rail sprang open
+            there was nothing painted yet, so the notch showed the page behind
+            it — a white strip on a dark theme, which is what "the panel starts
+            white" was. Clipped instead, the spring *reveals* opaque chrome. */}
+        <div className="absolute inset-y-0 left-0 w-[var(--rail-w)] border-r border-chrome-line bg-chrome transition-colors duration-300" />
         <motion.div
           initial={false}
           animate={{
@@ -102,16 +128,16 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
             opacity: isOpen ? 1 : 0
           }}
           transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
-          className={`relative grid h-full w-20 grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)] justify-items-center overflow-y-auto scrollbar-hide ${dense ? 'gap-1 py-2' : 'py-6'} ${isOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}
+          className={`relative grid h-full w-[var(--rail-w)] grid-rows-[minmax(0,1fr)_auto_minmax(0,1fr)] justify-items-center overflow-y-auto scrollbar-hide ${dense ? 'gap-1 py-2' : 'py-6'} ${isOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}
         >
           <button
             type="button"
             onClick={onToggle}
             title={isOpen ? t.collapse : t.expand}
-            className={`group relative row-start-1 flex shrink-0 cursor-pointer items-center justify-center self-start overflow-hidden rounded-2xl border border-slate-200/50 bg-white/60 shadow-sm transition-colors hover:bg-slate-100/70 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 ${dense ? 'h-9 w-9' : 'h-12 w-12'}`}
+            className={`group relative row-start-1 flex shrink-0 cursor-pointer items-center justify-center self-start overflow-hidden rounded-2xl border border-slate-200/50 bg-white/60 shadow-sm transition-colors hover:bg-slate-100/70 dark:border-zinc-700/50 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 ${dense ? 'w-[max(30px,calc(var(--rail-w)*0.46))]' : 'w-[calc(var(--rail-w)*0.6)]'} aspect-square`}
           >
             <div className="absolute inset-0 bg-slate-100/50 opacity-0 transition-opacity duration-300 group-hover:opacity-100 dark:bg-zinc-700/50" />
-            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className={`${dense ? 'h-7 w-7' : 'h-9 w-9'} -translate-y-0.5 text-slate-700 drop-shadow-sm transition-transform duration-300 group-hover:scale-110 dark:text-slate-200`}>
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="h-[68%] w-[68%] -translate-y-0.5 text-slate-700 drop-shadow-sm transition-transform duration-300 group-hover:scale-110 dark:text-slate-200">
               <path d="M30 20H55C71.5685 20 85 33.4315 85 50C85 66.5685 71.5685 80 55 80H30V20Z" fill="currentColor" fillOpacity="0.4" />
               <rect x="15" y="20" width="20" height="60" rx="10" fill="currentColor" />
               <circle cx="55" cy="50" r="10" fill="currentColor" />
@@ -125,7 +151,13 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
               as soon as the window got shorter. */}
           <div className={`row-start-2 flex w-full flex-col items-center ${dense ? 'gap-2' : 'gap-4'}`}>
             <div className="w-full px-3">
-              <SidebarButton icon={<Bookmark size={22} />} label={t.bookmarks} onClick={onBookmarksClick} dense={dense} />
+              <SidebarButton
+                icon={<Bookmark size={22} />}
+                label={isBookmarked ? t.bookmarked : t.bookmarks}
+                onClick={onBookmarksClick}
+                active={isBookmarked}
+                dense={dense}
+              />
             </div>
 
             {/*
@@ -177,31 +209,40 @@ interface SidebarButtonProps {
 }
 
 function SidebarButton({ icon, label, onClick, active, size = 'md', dense = false }: SidebarButtonProps) {
-  // Dense mode trades `w-full` for a fixed 36px square so the whole rail fits a
-  // 1/3-height window — but every wrapper above is a plain block with `px-3`,
-  // so a fixed-width button sat on the padding edge (12..48) while the rail's
-  // centre is 40. The media card *did* centre, because it is a flex parent with
-  // `items-center`, so the cluster read as a column shoved 10px left. `mx-auto`
-  // puts the block-level button back on the rail's centreline in both modes.
+  // Dense mode trades `w-full` for a narrower fixed square so the whole rail
+  // fits a 1/3-height window — but every wrapper above is a plain block with
+  // `px-3`, so a fixed-width button sat on the padding edge while the rail's
+  // centre is 40. The media card *did* centre, because it is a flex parent
+  // with `items-center`, so the cluster read as a column shoved left.
+  // `mx-auto` puts the block-level button back on the rail's centreline in
+  // both modes, and the width is a fraction of `--rail-w` so it keeps fitting
+  // when the rail itself narrows with the window.
+  // `max(32px, …)` keeps the smallest case (60px rail, short window) at a
+  // 32px hit target instead of the 28px the bare ratio would give.
   return (
     <button
       type="button"
       onClick={onClick}
       className={`
-        relative group flex items-center justify-center rounded-xl transition-all duration-200 pointer-events-auto
-        ${dense ? 'mx-auto h-9 w-9' : 'aspect-square w-full'}
+        relative group flex items-center justify-center rounded-xl
+        transition-[background-color,color,transform,box-shadow] duration-200 pointer-events-auto
+        aspect-square ${dense ? 'mx-auto w-[max(32px,calc(var(--rail-w)*0.46))]' : 'w-full'}
+        active:scale-[0.94]
         ${active
-          ? 'bg-teal-500 text-white shadow-md shadow-teal-500/20'
+          ? 'bg-teal-500 text-white shadow-[0_6px_18px_-2px_rgba(20,184,166,0.55),inset_0_1px_0_rgba(255,255,255,0.28)]'
           : 'text-slate-600 hover:bg-black/5 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white'
         }
         ${size === 'sm' ? 'scale-90' : 'scale-100'}
       `}
       title={label}
     >
-      <span className={dense ? 'flex scale-[0.82] items-center justify-center' : 'flex items-center justify-center'}>
+      {/* lucide keeps whatever `size` was passed as an SVG attribute; these
+          classes win over it, so one `--rail-icon` value drives every icon and
+          the whole cluster shrinks together with the rail. */}
+      <span className={`flex items-center justify-center transition-transform duration-200 group-hover:scale-[1.06] group-active:scale-[0.96] [&>svg]:h-[var(--rail-icon,22px)] [&>svg]:w-[var(--rail-icon,22px)] ${dense ? 'scale-[0.82]' : ''}`}>
         {icon}
       </span>
-      <span className="pointer-events-none absolute left-full z-50 ml-4 whitespace-nowrap rounded-md bg-slate-800 px-2 py-1 text-xs font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+      <span className="pointer-events-none absolute left-full z-50 ml-4 -translate-x-1 whitespace-nowrap rounded-md bg-slate-800/95 px-2 py-1 text-xs font-medium text-white opacity-0 shadow-lg shadow-black/20 backdrop-blur transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-100">
         {label}
       </span>
     </button>
