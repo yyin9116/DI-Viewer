@@ -115,6 +115,36 @@
   --tw-inset-ring-shadow: 0 0 #0000;
   --tw-ring-offset-shadow: 0 0 #0000;
   --tw-ring-shadow: 0 0 #0000;
+
+  /*
+   * Same root cause, wider blast radius. `translate-*`, `scale-*`, the plain
+   * `border` utility, `space-*` and the gradient helpers each read a companion
+   * variable that Tailwind only seeds two ways: `@property`'s initial value,
+   * or the `@layer properties` fallback block. `@property` is dropped for a
+   * shadow root's adopted sheet, and that fallback is wrapped in
+   * `@supports ((-webkit-hyphens: none) and (not (margin-trim: inline)))` —
+   * this WebView2 reports BOTH of those features as unsupported, so the whole
+   * block is skipped and neither route defines the variables.
+   *
+   * What that looked like: `-translate-y-*` computed `translate: none` (hence
+   * the collapse handle hanging from the midline instead of straddling it),
+   * `group-hover:scale-110` / `active:scale-[0.94]` never scaled, and
+   * `border-style: var(--tw-border-style)` was invalid so those borders drew
+   * nothing. Seeding the no-op defaults on the host fixes all of them at once;
+   * utilities still override each variable on the element that asks for it.
+   */
+  --tw-translate-x: 0;
+  --tw-translate-y: 0;
+  --tw-translate-z: 0;
+  --tw-scale-x: 1;
+  --tw-scale-y: 1;
+  --tw-scale-z: 1;
+  --tw-space-x-reverse: 0;
+  --tw-space-y-reverse: 0;
+  --tw-border-style: solid;
+  --tw-gradient-from: #0000;
+  --tw-gradient-via: #0000;
+  --tw-gradient-to: #0000;
 }
 
 /*
@@ -310,4 +340,105 @@ body {
 
 .diviewer-host-root * {
   box-sizing: border-box;
+}
+/*
+ * Collapsed-rail handle ("把手"). The grip itself keeps its original look - a
+ * bright white capsule on dark chrome, a near-black one on light chrome - and
+ * only the halo around it goes blue: deep blue in dark mode, pale blue in light
+ * mode. Blue is carried by two layers that sit *outside* the grip, so the grip
+ * stays a crisp, high-contrast shape instead of turning into a coloured pill:
+ *
+ *  - `.rail-handle-bloom` is a blurred radial disc behind the grip, which reads
+ *    as light rather than as a hard ring. Two large box-shadow radii on a 6px
+ *    bar look like a glow-stick outline, not a glow.
+ *  - the box-shadow on `.rail-handle-core` keeps the two 1px/2.5px definition
+ *    rings (without them the capsule dissolves into its own halo) and adds a
+ *    short blue falloff so the grip and the bloom meet without a seam.
+ *
+ * `data-tone` lives on the button (driven by `isDarkMode`) rather than relying on
+ * an ancestor `.dark`, so the handle can never pick up a stale theme.
+ */
+.rail-handle-core {
+  background: rgba(0, 0, 0, 0.9);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.28),
+    0 0 0 2.5px rgba(255, 255, 255, 0.62),
+    0 0 12px rgba(147, 197, 253, 0.85),
+    0 0 26px rgba(96, 165, 250, 0.5);
+  transition: box-shadow 300ms ease, height 300ms ease, width 300ms ease;
+}
+
+.rail-handle-bloom {
+  background: radial-gradient(
+    closest-side,
+    rgba(96, 165, 250, 0.55),
+    rgba(147, 197, 253, 0.28) 58%,
+    rgba(147, 197, 253, 0) 100%
+  );
+  filter: blur(7px);
+  opacity: 0.6;
+  transition: opacity 320ms ease;
+}
+
+[data-tone='dark'] .rail-handle-core {
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.35),
+    0 0 0 2.5px rgba(0, 0, 0, 0.32),
+    0 0 13px rgba(59, 130, 246, 0.9),
+    0 0 30px rgba(37, 99, 235, 0.55);
+}
+
+[data-tone='dark'] .rail-handle-bloom {
+  background: radial-gradient(
+    closest-side,
+    rgba(37, 99, 235, 0.78),
+    rgba(37, 99, 235, 0.34) 55%,
+    rgba(37, 99, 235, 0) 100%
+  );
+  opacity: 0.72;
+}
+
+/* Hover: the glow widens and brightens, the grip itself only grows (as before). */
+.group:hover .rail-handle-core,
+.group:focus-visible .rail-handle-core {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.3),
+    0 0 0 2.5px rgba(255, 255, 255, 0.7),
+    0 0 16px rgba(147, 197, 253, 1),
+    0 0 34px rgba(96, 165, 250, 0.65);
+}
+
+[data-tone='dark'] .group:hover .rail-handle-core,
+[data-tone='dark'] .group:focus-visible .rail-handle-core {
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.4),
+    0 0 0 2.5px rgba(0, 0, 0, 0.3),
+    0 0 18px rgba(59, 130, 246, 1),
+    0 0 40px rgba(37, 99, 235, 0.7);
+}
+
+.group:hover .rail-handle-bloom,
+.group:focus-visible .rail-handle-bloom {
+  opacity: 1;
+}
+
+/*
+ * A slow breath, on the bloom only. `transform` is animated and `opacity` is
+ * transitioned, so this does not fight the hover ramp above.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .rail-handle-bloom {
+    animation: rail-handle-breathe 6.5s ease-in-out infinite;
+  }
+
+  @keyframes rail-handle-breathe {
+    0%,
+    100% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.14);
+    }
+  }
 }

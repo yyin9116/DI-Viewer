@@ -93,17 +93,27 @@ export function Sidebar({ activeTabId, dockColor, isDarkMode, onBookmarksClick, 
           scale: 1
         }}
         transition={{ duration: 0.2 }}
-        className={`fixed left-2 top-[50dvh] -translate-y-1/2 z-[2147483647] flex h-24 w-8 items-center justify-center group ${isOpen ? 'pointer-events-none' : 'pointer-events-auto cursor-pointer'}`}
+        /* The offset is baked into `top` instead of using `-translate-y-1/2`:
+           framer-motion writes `transform` inline to drive the `x` above, and an
+           inline transform beats the Tailwind class, so the class did nothing
+           and the 96px box hung *from* the midline instead of straddling it.
+           Half of h-24 (3rem) is subtracted so the box is centred on 50dvh. */
+        style={{ top: 'calc(50dvh - 3rem)' }}
+        className={`fixed left-2 z-[2147483647] flex h-24 w-8 items-center justify-center group ${isOpen ? 'pointer-events-none' : 'pointer-events-auto cursor-pointer'}`}
+        data-tone={isDarkMode ? 'dark' : 'light'}
         onClick={onToggle}
         title={t.expand}
       >
-        <div className={`h-14 w-1.5 rounded-full transition-all duration-300 group-hover:h-16 group-hover:w-[7px] ${
-          isDarkMode
-            ? // White core, dark halo: reads on both the black chrome and a white
-              // page, which is where the old single `ring` disappeared.
-              'bg-white/95 shadow-[0_10px_24px_rgba(0,0,0,0.45),0_0_0_1px_rgba(255,255,255,0.35),0_0_0_2.5px_rgba(0,0,0,0.32)]'
-            : 'bg-black/90 shadow-[0_8px_20px_rgba(15,23,42,0.28),0_0_0_1px_rgba(0,0,0,0.28),0_0_0_2.5px_rgba(255,255,255,0.6)]'
-        }`} />
+        {/* Two layers. The bloom is a real, blurred disc behind the grip rather
+            than more box-shadow layers: three large radii stacked on a 6px bar
+            read as a hard halo, while a blur disc reads as light. Which blue is
+            decided by `data-tone` on the button, so the tone can never drift
+            from the `isDarkMode` the rest of the rail is using. */}
+        <span
+          aria-hidden="true"
+          className="rail-handle-bloom pointer-events-none absolute inset-0 m-auto h-14 w-3 rounded-full"
+        />
+        <div className="rail-handle-core relative h-14 w-1.5 rounded-full group-hover:h-16 group-hover:w-[7px]" />
       </motion.button>
 
       <motion.div
