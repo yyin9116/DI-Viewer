@@ -294,6 +294,11 @@ pub(crate) struct PersistedState {
     pub(crate) window_maximized: bool,
     #[serde(default)]
     pub(crate) window_position_locked: bool,
+    /// Sticking a released window to the nearest work-area edge. Defaults to
+    /// on: that is what every build before this field did unconditionally, so
+    /// an existing history file keeps its behaviour.
+    #[serde(default = "default_true")]
+    pub(crate) window_snap_enabled: bool,
     /// Master switch for the user-configurable global shortcuts. The fixed
     /// rescue shortcut stays registered either way.
     #[serde(default = "default_true")]
@@ -342,6 +347,7 @@ impl Default for PersistedState {
             window_visible: true,
             window_maximized: false,
             window_position_locked: false,
+            window_snap_enabled: true,
             hotkeys_enabled: true,
             bookmarks: Vec::new(),
             tab_urls: vec![LEGACY_HOME_URL.to_string()],

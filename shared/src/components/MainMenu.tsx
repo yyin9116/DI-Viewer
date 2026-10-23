@@ -19,7 +19,8 @@ import {
   ShieldAlert,
   Check,
   Home,
-  Monitor
+  Monitor,
+  Magnet
 } from 'lucide-react';
 import type { HotkeyConfig, ThemeMode } from '../types';
 import { bindingHasModifier, bindingIsTypingSafe } from '../lib/inAppHotkeys';
@@ -50,6 +51,8 @@ interface MainMenuProps {
   isInsideMode: boolean;
   onTogglePositionLock: () => void;
   isPositionLocked: boolean;
+  snapEnabled: boolean;
+  onToggleSnap: () => void;
   isPinned: boolean;
   onTogglePin: () => void;
   isSidebarVisible: boolean;
@@ -108,6 +111,8 @@ const TEXT = {
     exitWith: '退出',
     positionLock: '锁定位置',
     positionLockHint: '禁止拖动窗口',
+    snap: '贴边吸附',
+    snapHint: '松开窗口时自动贴到屏幕边缘',
     sidebar: '显示侧边栏',
     sidebarHint: '收起后左侧仅保留展开把手',
     presets: '窗口宽度',
@@ -185,6 +190,8 @@ const TEXT = {
     exitWith: 'exit',
     positionLock: 'Lock position',
     positionLockHint: 'Dragging is disabled',
+    snap: 'Snap to edges',
+    snapHint: 'Sticks to the screen edge when released near it',
     sidebar: 'Show sidebar',
     sidebarHint: 'Collapsed leaves only the handle',
     presets: 'Window width',
@@ -361,6 +368,8 @@ export function MainMenu({
   isInsideMode,
   onTogglePositionLock,
   isPositionLocked,
+  snapEnabled,
+  onToggleSnap,
   isPinned,
   onTogglePin,
   isSidebarVisible,
@@ -796,6 +805,13 @@ export function MainMenu({
                   hint={t.positionLockHint}
                   checked={isPositionLocked}
                   onChange={onTogglePositionLock}
+                />
+                <SwitchRow
+                  icon={<Magnet size={15} />}
+                  label={t.snap}
+                  hint={t.snapHint}
+                  checked={snapEnabled}
+                  onChange={onToggleSnap}
                 />
                 <SwitchRow
                   icon={<Layout size={15} />}

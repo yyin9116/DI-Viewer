@@ -24,6 +24,8 @@ export interface FrontendState {
   visible: boolean;
   maximized: boolean;
   positionLocked: boolean;
+  /** "贴边吸附": releasing the window near a work-area edge sticks it there. */
+  snapEnabled: boolean;
   hotkeysEnabled: boolean;
   sidebarVisible: boolean;
   uiLang: string;

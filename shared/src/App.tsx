@@ -28,6 +28,7 @@ const defaultState: FrontendState = {
   visible: true,
   maximized: false,
   positionLocked: false,
+  snapEnabled: true,
   hotkeysEnabled: true,
   sidebarVisible: true,
   uiLang: 'zh',
@@ -674,6 +675,8 @@ export default function App() {
                 isInsideMode={snapshot.state.inside}
                 onTogglePositionLock={() => void run(() => hostBridge.toggleLockPosition(), 'toggle_position_lock', 2500)}
                 isPositionLocked={snapshot.state.positionLocked}
+                snapEnabled={snapshot.state.snapEnabled}
+                onToggleSnap={() => void run(() => hostBridge.setSnapEnabled(!snapshot.state.snapEnabled), 'set_snap_enabled', 2500)}
                 onAbout={() => void run(() => hostBridge.openExternal(GITHUB_REPO_URL), 'open_about', 3000)}
                 isPinned={snapshot.state.onTop}
                 onTogglePin={() => void run(() => hostBridge.toggleOnTop(), 'toggle_on_top', 2500)}

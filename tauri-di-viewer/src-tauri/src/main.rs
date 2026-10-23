@@ -212,6 +212,10 @@ struct FrontendState {
     visible: bool,
     maximized: bool,
     position_locked: bool,
+    /// "贴边吸附": whether releasing the window near a work-area edge sticks it
+    /// there. Exposed so the settings switch reflects the saved value instead of
+    /// always starting from a guess.
+    snap_enabled: bool,
     hotkeys_enabled: bool,
     sidebar_visible: bool,
     ui_lang: String,
@@ -329,6 +333,13 @@ struct AppState {
     /// keeps that path deadlock-free; disk persistence still goes through
     /// `update_persist`, which is the source of truth on the next start.
     theme_mode: AtomicU8,
+    /// Whether a window released near a work-area edge should stick to it.
+    ///
+    /// Same reasoning as `theme_mode`: `snap_browser_to_edge` runs from the move
+    /// handler, which can already be inside a `data` lock (the handler persists
+    /// geometry right after snapping), so the flag has to be readable without
+    /// taking that lock again.
+    snap_enabled: AtomicBool,
 }
 
 /// Theme choice, as stored in the atomic above. `system` is the fallback for
@@ -1228,6 +1239,7 @@ fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
     'get_start_page',
     'set_start_page',
     'set_theme',
+    'set_snap_enabled',
     'resize_to_ratio',
     'open_control_panel',
     'open_external'
@@ -1289,6 +1301,7 @@ fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
     get_start_page: () => call('get_start_page'),
     set_start_page: (url) => call('set_start_page', { url: String(url == null ? '' : url) }),
     set_theme: (mode) => call('set_theme', { mode: String(mode == null ? 'system' : mode) }),
+    set_snap_enabled: (enabled) => call('set_snap_enabled', { enabled: Boolean(enabled) }),
     resize_to_ratio: (ratio, commit) => call('resize_to_ratio', { ratio: Number(ratio || 0.5), commit: commit !== false }),
     open_control_panel: () => call('open_control_panel'),
     // The settings panel's "About" row. It was wired straight to a command the
@@ -1795,6 +1808,12 @@ fn drag_flag_fresh(started: Option<Instant>, now: Instant) -> bool {
 
 fn snap_browser_to_edge(app: &AppHandle) -> AppResult<()> {
     let state = app.state::<AppState>();
+    // Single choke point for the user-facing "贴边吸附" switch. Every caller
+    // (move handler, width-bar release, restore) goes through here, so the
+    // preference cannot be honoured on one path and ignored on another.
+    if !state.snap_enabled.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     if state.snapping.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
@@ -3326,6 +3345,7 @@ async fn get_state(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResu
         visible: snapshot.0.window_visible,
         maximized: snapshot.0.window_maximized,
         position_locked: snapshot.0.window_position_locked,
+        snap_enabled: state.snap_enabled.load(Ordering::SeqCst),
         hotkeys_enabled: snapshot.0.hotkeys_enabled,
         sidebar_visible: state.sidebar_visible.load(Ordering::SeqCst),
         ui_lang: current_ui_lang(&state),
@@ -3438,6 +3458,25 @@ async fn set_theme(
     broadcast_theme(&app, &normalized);
     push_log(&app, "ui", "set_theme", normalized.clone());
     Ok(normalized)
+}
+
+/// Turn edge snapping on or off ("贴边吸附").
+///
+/// Deliberately passive: flipping the switch does not move the window. Snapping
+/// on enable would look like the app jumping by itself, and the user asked for
+/// the *gesture* to stop sticking, not for a re-layout.
+#[tauri::command]
+async fn set_snap_enabled(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> AppResult<bool> {
+    state.snap_enabled.store(enabled, Ordering::SeqCst);
+    update_persist(&state, |persist| {
+        persist.window_snap_enabled = enabled;
+    })?;
+    push_log(&app, "ui", "set_snap_enabled", enabled.to_string());
+    Ok(enabled)
 }
 
 /// Point "home" at another address (or back at the built-in page).
@@ -4381,6 +4420,7 @@ pub fn run() {
             let home_url = resolve_home_url(&app.handle().clone(), &persist.start_page_url);
             // Read before `persist` moves into the runtime state below.
             let theme_mode = theme_mode_code(&persist.theme_mode);
+            let snap_enabled = persist.window_snap_enabled;
             persist.last_url = normalize_url_with_home(&persist.last_url, &home_url);
             persist.tab_urls = sanitize_tab_urls(persist.tab_urls, &home_url);
             if persist.tab_urls.is_empty() {
@@ -4450,6 +4490,7 @@ pub fn run() {
                 tab_mru: Mutex::new(Vec::new()),
                 tab_parked: Mutex::new(HashSet::new()),
                 theme_mode: AtomicU8::new(theme_mode),
+                snap_enabled: AtomicBool::new(snap_enabled),
             });
 
             create_browser_window(&app.handle().clone()).map_err(std::io::Error::other)?;
@@ -4511,6 +4552,7 @@ pub fn run() {
             get_start_page,
             set_start_page,
             set_theme,
+            set_snap_enabled,
             navigate,
             go_home,
             go_back,

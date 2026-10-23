@@ -42,6 +42,7 @@ const defaultState: FrontendState = {
   visible: true,
   maximized: false,
   positionLocked: false,
+  snapEnabled: true,
   hotkeysEnabled: true,
   sidebarVisible: true,
   uiLang: 'zh',
@@ -91,6 +92,9 @@ function normalizeState(raw: unknown): FrontendState {
     visible: Boolean(state.visible ?? true),
     maximized: Boolean(state.maximized ?? false),
     positionLocked: Boolean(state.positionLocked ?? state.position_locked ?? false),
+    // Absent means an older host build that always snapped, so `true` is the
+    // value that reproduces its behaviour rather than silently changing it.
+    snapEnabled: Boolean(state.snapEnabled ?? state.snap_enabled ?? true),
     hotkeysEnabled: Boolean(state.hotkeysEnabled ?? state.hotkeys_enabled ?? true),
     sidebarVisible: Boolean(state.sidebarVisible ?? state.sidebar_visible ?? true),
     uiLang: String(state.uiLang ?? state.ui_lang ?? 'zh'),
@@ -442,6 +446,9 @@ export const hostBridge = {
   /** Returns the stored mode (`light` | `dark` | `system`) after normalisation. */
   setTheme(mode: ThemeMode) {
     return callBridge<string>('set_theme', mode);
+  },
+  setSnapEnabled(enabled: boolean) {
+    return callBridge<boolean>('set_snap_enabled', enabled);
   },
   toggleSidebar() {
     return callBridge('toggle_sidebar');
