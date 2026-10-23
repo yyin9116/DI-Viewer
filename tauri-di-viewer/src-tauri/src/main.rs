@@ -13,8 +13,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Mutex,
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -22,10 +22,10 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    webview::{NewWindowResponse, Webview, WebviewBuilder},
+    webview::{Color, NewWindowResponse, PageLoadEvent, Webview, WebviewBuilder},
     window::{Window, WindowBuilder},
     AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Position,
-    Size, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Rect, Size, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
@@ -38,6 +38,10 @@ const LEGACY_HOME_URL_ALT: &str = "https://limestart.cn";
 const LEGACY_HOME_URL_WWW: &str = "https://www.limestart.cn/";
 const LEGACY_HOME_URL_WWW_ALT: &str = "https://www.limestart.cn";
 const LOCAL_HOME_RESOURCE: &str = "lucid-start-page/index.html";
+/// Local placeholder a new tab is created on: one white box, no assets. It
+/// gives the webview its first frame immediately so the tab never presents an
+/// unframed (black) surface while the real URL loads.
+const LOCAL_WARM_RESOURCE: &str = "lucid-start-page/warm.html";
 const MAX_TAB_SESSIONS: usize = 20;
 /// How close to a monitor edge the window has to be released before it sticks.
 ///
@@ -49,6 +53,9 @@ const MAX_TAB_SESSIONS: usize = 20;
 /// "near" the edge on purpose.
 const SNAP_DISTANCE: i32 = 24;
 const SNAP_DEBOUNCE_MS: u64 = 180;
+/// Fallback for a placeholder document whose `Finished` event never arrives.
+/// The real navigation is driven by that event, not by this timer.
+const WARM_FALLBACK_MS: u64 = 1500;
 const RESIZE_DEBOUNCE_MS: u64 = 250;
 /// Windows reports (-32000, -32000) for minimized/iconic windows; anything
 /// at or below this coordinate is treated as a minimized-window artifact.
@@ -65,7 +72,7 @@ const RESCUE_SHORTCUT: &str = "Ctrl+Alt+Shift+R";
 /// The three backgrounding switches matter for tab switching: every tab is its
 /// own hidden window, and WebView2 throttles renderers it believes are
 /// occluded, so the first frame after `show()` is a catch-up repaint.
-const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu-sandbox --no-sandbox --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
+const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion --disable-gpu-sandbox --no-sandbox --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding";
 
 /// Same arguments, optionally plus a DevTools port. Shipping builds leave
 /// `DIVIEWER_DEBUG_PORT` unset, so no port is ever opened by default; a
@@ -86,13 +93,30 @@ fn webview_browser_args() -> String {
 /// width; 1220x760 leaves the wrap fully expanded with a little slack).
 const START_PAGE_FIT_WIDTH: f64 = 1220.0;
 const START_PAGE_FIT_HEIGHT: f64 = 760.0;
-/// Toolbar (56) + tab strip (32). Kept in sync with `SHELL_CHROME_HEIGHT` in
-/// the shell sources: pages are padded down by exactly this much so the chrome
-/// never covers their content.
-const SHELL_CHROME_HEIGHT: f64 = 88.0;
-/// Width of the left rail. The page is inset by this much while the shell is
-/// expanded so the rail never cuts off the page's own left column.
-const SHELL_SIDEBAR_WIDTH: f64 = 80.0;
+/// Toolbar + tab strip, per the shell's three tiers: 56+32 / 52+30 / 46+28.
+/// The authoritative table lives in `shared/src/lib/chromeMetrics.ts`; the
+/// injected bootstrap recomputes the same numbers at runtime from
+/// `window.innerWidth` so the very first layout is already inset correctly.
+const SHELL_CHROME_TIERS: [(f64, f64, f64); 3] = [
+    // (min width, chrome height, rail width)
+    (1080.0, 88.0, 80.0),
+    (860.0, 82.0, 70.0),
+    (0.0, 74.0, 60.0),
+];
+
+/// Serialised for the injected bootstrap: `[[minWidth, chromeH, railW], …]`,
+/// widest tier first.
+fn shell_tiers_json() -> String {
+    let mut out = String::from("[");
+    for (index, (min_width, chrome, rail)) in SHELL_CHROME_TIERS.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!("[{min_width},{chrome},{rail}]"));
+    }
+    out.push(']');
+    out
+}
 const SHARED_DIST_CSS: &str = include_str!("../../../shared/dist/assets/app.css");
 const SHARED_DIST_JS: &str = include_str!("../../../shared/dist/assets/app.js");
 /// Sarasa Gothic SC ships with the app: it is the typeface the design system
@@ -172,8 +196,8 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::HWND;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE, LWA_ALPHA,
-    WS_EX_LAYERED, WS_EX_TRANSPARENT,
+    EnumChildWindows, GetParent, GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW,
+    GWL_EXSTYLE, LWA_ALPHA, WS_EX_LAYERED, WS_EX_TRANSPARENT,
 };
 
 type AppResult<T> = Result<T, String>;
@@ -195,6 +219,12 @@ struct FrontendState {
     hotkeys: HotkeyConfig,
     /// `name=combo` entries the OS refused; the settings panel marks those rows.
     hotkey_conflicts: Vec<String>,
+    /// Effective home address — the built-in start page, or a user-chosen one.
+    start_page_url: String,
+    /// True when `start_page_url` is the page bundled with the app.
+    start_page_builtin: bool,
+    /// `light` | `dark` | `system` — the user's choice, not the resolved theme.
+    theme_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -241,7 +271,7 @@ struct AppState {
     history_path: PathBuf,
     hotkeys_path: PathBuf,
     runtime_log_path: PathBuf,
-    home_url: String,
+    home_url: Mutex<String>,
     ui_lang_zh: AtomicBool,
     data: Mutex<RuntimeState>,
     snapping: AtomicBool,
@@ -279,6 +309,70 @@ struct AppState {
     /// keyed by window label: `set_always_on_top` goes through SetWindowPos,
     /// which repaints the window.
     applied_flags: Mutex<HashMap<String, (bool, bool)>>,
+    /// Native host window (`WRY_WEBVIEW`) of each tab's child webview, keyed by
+    /// tab label. Tauri can show or hide a webview but has no API for stacking
+    /// two of them, so ordering a switch has to go through these handles.
+    tab_hosts: Mutex<HashMap<String, isize>>,
+    /// Tab labels by recency of use, newest last. Only the most recent
+    /// `LIVE_TAB_LIMIT` tabs sit on screen; the rest are parked off-screen.
+    tab_mru: Mutex<Vec<String>>,
+    /// Labels whose webview is parked: still alive, still composited, but moved
+    /// far outside the window's client area so the parent clips it away. This
+    /// replaces `hide()`, which tore the compositor down and left the whole
+    /// window blank for the ~0.5s WebView2 needed to build a first frame again.
+    tab_parked: Mutex<HashSet<String>>,
+    /// `light` / `dark` / `system`, packed into an atomic.
+    ///
+    /// Every new tab's injected bootstrap needs this *while the webview is being
+    /// built*, which can happen with the state lock held (a session restore
+    /// mints several tabs in a row). A lock-free mirror of `persist.theme_mode`
+    /// keeps that path deadlock-free; disk persistence still goes through
+    /// `update_persist`, which is the source of truth on the next start.
+    theme_mode: AtomicU8,
+}
+
+/// Theme choice, as stored in the atomic above. `system` is the fallback for
+/// every unrecognised value: guessing "light" would make a dark desktop flash
+/// white on the first frame.
+const THEME_SYSTEM: u8 = 0;
+const THEME_LIGHT: u8 = 1;
+const THEME_DARK: u8 = 2;
+
+fn theme_mode_code(input: &str) -> u8 {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "light" => THEME_LIGHT,
+        "dark" => THEME_DARK,
+        _ => THEME_SYSTEM,
+    }
+}
+
+fn theme_mode_str(code: u8) -> &'static str {
+    match code {
+        THEME_LIGHT => "light",
+        THEME_DARK => "dark",
+        _ => "system",
+    }
+}
+
+impl AppState {
+    /// Current home address: the built-in start page, or whatever was set in
+    /// the settings panel.
+    ///
+    /// `Mutex<String>` rather than a plain `String` because the value changes at
+    /// runtime. It is a *separate* lock from `data`, so calling this while
+    /// holding the state lock cannot deadlock — every caller here does exactly
+    /// that (closing the last tab, restoring a session, …).
+    fn home_url(&self) -> String {
+        self.home_url
+            .lock()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| app_protocol_home_url())
+    }
+
+    /// `light` / `dark` / `system`, for code paths that cannot take a lock.
+    fn theme_mode(&self) -> String {
+        theme_mode_str(self.theme_mode.load(Ordering::Relaxed)).to_string()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -503,14 +597,69 @@ fn font_pack_script() -> String {
     )
 }
 
-fn resolve_home_url(app: &AppHandle) -> String {    let _ = app; // signature kept for existing callers
+/// Home address for this run.
+///
+/// Precedence: the dev override (`DI_VIEWER_HOME_URL`), then whatever the
+/// settings panel stored, then the bundled start page. The stored value is used
+/// verbatim — it was scheme/host checked when it was saved, and re-normalising
+/// here could only fold it back onto the built-in page.
+fn resolve_home_url(app: &AppHandle, custom: &str) -> String {
+    let _ = app; // signature kept for existing callers
     if let Ok(dev_home) = std::env::var("DI_VIEWER_HOME_URL") {
         let trimmed = dev_home.trim();
         if !trimmed.is_empty() && Url::parse(trimmed).is_ok() {
             return trimmed.to_string();
         }
     }
+    let trimmed = custom.trim();
+    if !trimmed.is_empty() && Url::parse(trimmed).is_ok() {
+        return trimmed.to_string();
+    }
     app_protocol_home_url()
+}
+
+/// Canonical form of a user-entered home address, or `None` for the built-in
+/// page.
+///
+/// Accepts `limestart.cn` (the scheme is implied) and rejects anything that is
+/// not http(s) — a `file:` home would let a pasted path inside the app's own
+/// document context, and `javascript:` needs no explanation.
+fn normalize_start_page(input: &str) -> AppResult<Option<String>> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    // Typing the built-in page's own address back means "use the built-in one".
+    if trimmed.contains("/lucid-start-page/index.html") {
+        return Ok(None);
+    }
+    // Reject a foreign scheme *before* the https:// prefix goes on: `ftp://x`
+    // would otherwise become `https://ftp://x`, which parses fine as host "ftp"
+    // with the rest as a path - so a typed-in `ftp://nope` was stored as the
+    // very plausible-looking `https://ftp//nope`.
+    if let Some(scheme_end) = trimmed.find("://") {
+        let scheme = &trimmed[..scheme_end];
+        let looks_like_scheme = !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.');
+        if looks_like_scheme && !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+            return Err("Start page must be an http(s) address".to_string());
+        }
+    }
+    let candidate = if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{trimmed}")
+    };
+    let parsed = Url::parse(&candidate).map_err(|_| "Invalid start page address".to_string())?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err("Start page must be an http(s) address".to_string());
+    }
+    if parsed.host_str().unwrap_or("").is_empty() {
+        return Err("Invalid start page address".to_string());
+    }
+    Ok(Some(parsed.to_string()))
 }
 
 fn normalize_bookmark(url: &str, title: &str, home_url: &str) -> AppResult<BookmarkItem> {
@@ -547,7 +696,13 @@ fn sanitize_tab_urls(items: Vec<String>, home_url: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut seen = HashSet::new();
     for item in items {
-        let normalized = normalize_url_with_home(&item, home_url);
+        // A tab that restored onto the placeholder can never leave it, so bring
+        // it back to the start page instead of persisting that state forever.
+        let normalized = if item.contains("lucid-start-page/warm") {
+            home_url.to_string()
+        } else {
+            normalize_url_with_home(&item, home_url)
+        };
         if parse_url(&normalized).is_ok() && seen.insert(normalized.clone()) {
             result.push(normalized);
             if result.len() >= MAX_TAB_SESSIONS {
@@ -606,7 +761,10 @@ fn parse_url(input: &str) -> AppResult<Url> {
 }
 
 fn tab_title_from_url(url: &str) -> String {
-    if url.contains("/lucid-start-page/index.html") || is_legacy_home_url(url) {
+    // Only the bundled page gets the product name. A custom home is just a site
+    // (limestart.cn was the legacy one), and calling it "Lucid Start Page" made
+    // the tab strip lie about where the tab actually points.
+    if url.contains("/lucid-start-page/index.html") {
         return "Lucid Start Page".to_string();
     }
     if let Ok(parsed) = Url::parse(url) {
@@ -679,6 +837,15 @@ fn set_active_tab_url(state: &AppState, url: String) -> AppResult<()> {
     })
 }
 
+/// True for documents the app serves itself: the start page, and the throwaway
+/// placeholder a new tab is created on. Neither is a place the user navigated
+/// to, so neither may be written into a tab's URL - once that happened the tab
+/// restored onto the placeholder, the placeholder "navigated" to itself, and it
+/// could never leave.
+fn is_internal_page(url: &str) -> bool {
+    url.contains("lucid-start-page/")
+}
+
 fn sync_tab_from_browser_label(app: &AppHandle, label: &str) -> AppResult<()> {
     // The tab may not have a webview yet (restored but never shown); its stored
     // URL is the truth in that case, so there is nothing to sync.
@@ -686,11 +853,28 @@ fn sync_tab_from_browser_label(app: &AppHandle, label: &str) -> AppResult<()> {
         return Ok(());
     };
     let state = app.state::<AppState>();
-    let home_url = state.home_url.clone();
-    let current_url = browser
+    let home_url = state.home_url();
+    let raw_url = browser
         .url()
-        .map(|u| normalize_url_with_home(u.as_str(), &home_url))
-        .unwrap_or_else(|_| home_url.clone());
+        .map(|u| u.as_str().to_string())
+        .unwrap_or_default();
+
+    if is_internal_page(&raw_url) {
+        // Repair a tab that was already poisoned by an older build, then keep
+        // its real URL untouched: the placeholder is on screen for ~100ms and
+        // must not overwrite where the tab is actually going.
+        if let Ok(mut locked) = state.data.lock() {
+            if let Some(tab) = locked.tabs.iter_mut().find(|tab| tab.label == label) {
+                if is_internal_page(&tab.url) {
+                    tab.url = home_url.clone();
+                    tab.title = tab_title_from_url(&home_url);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    let current_url = normalize_url_with_home(&raw_url, &home_url);
     let mut locked = state
         .data
         .lock()
@@ -853,7 +1037,7 @@ fn save_history(state: &AppState) -> AppResult<()> {
             .map_err(|_| "State lock poisoned".to_string())?;
         let mut persist = locked.persist.clone();
         if locked.tabs.is_empty() {
-            let fallback = normalize_url_with_home(&persist.last_url, &state.home_url);
+            let fallback = normalize_url_with_home(&persist.last_url, &state.home_url());
             persist.last_url = fallback.clone();
             persist.tab_urls = vec![fallback];
             persist.active_tab_index = 0;
@@ -943,18 +1127,60 @@ fn escape_js_template_literal(input: &str) -> String {
         .replace("${", "\\${")
 }
 
-fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
+fn shared_shell_script(app: &AppHandle) -> AppResult<String> {
     // Shared UI assets are embedded at compile time (include_str!), so the
     // shell works identically for dev, installed and single-file portable
     // builds with no on-disk resource layout dependency.
     let css = escape_js_template_literal(SHARED_DIST_CSS);
     let js = SHARED_DIST_JS;
+    // The theme choice is read here, at webview-build time, so the static
+    // placeholder chrome is painted in the right colour instead of flashing
+    // white for the ~80ms it takes React to mount.
+    let theme_mode = app.state::<AppState>().theme_mode();
 
     let template = r##"
 (() => {
+  // Theme first: `system` is resolved against the engine's own
+  // prefers-color-scheme (which WebView2 maps to the Windows app theme), so a
+  // dark desktop never gets a white chrome frame, and no registry access is
+  // needed on the Rust side.
+  const themeMode = '__INITIAL_THEME_MODE__';
+  const prefersDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const shellDark = themeMode === 'dark' || (themeMode === 'system' && prefersDark);
+  const shellTheme = shellDark ? 'dark' : 'light';
+  // First-frame chrome metrics. The shell takes three widths of chrome (see
+  // `chromeMetrics.ts`), and the page has to be inset by exactly the size the
+  // shell will end up at - otherwise the first layout uses one tier and React
+  // switches to another, which shows up as a one-frame jump of 12-14px.
+  // The tier table comes from Rust (`SHELL_CHROME_TIERS`), so the numbers are
+  // declared once on that side; React still owns `--diviewer-inset-*` after it
+  // mounts.
+  const shellTiers = __SHELL_TIERS__;
+  const chromeMetrics = (() => {
+    const measured = Number(window.innerWidth) || 0;
+    const width = measured > 0 ? measured : 1220;
+    let pick = shellTiers[shellTiers.length - 1];
+    for (let i = 0; i < shellTiers.length; i += 1) {
+      if (width >= shellTiers[i][0]) {
+        pick = shellTiers[i];
+        break;
+      }
+    }
+    return { rail: pick[2], chrome: pick[1] };
+  })();
+
   const isTrustedStartPage = () => {
     const href = String(window.location.href || '').toLowerCase();
     return href.includes('/lucid-start-page/index.html');
+  };
+
+  // The placeholder a new tab is created on (see `create_tab_webview`). It is
+  // navigated away from within ~120ms, so building the shell for it would cost
+  // the very time the placeholder exists to save - and the shell would be
+  // thrown away with the document.
+  const isWarmPlaceholder = () => {
+    const href = String(window.location.href || '').toLowerCase();
+    return href.includes('/lucid-start-page/warm.html');
   };
 
   const resolveInvoke = () => {
@@ -999,6 +1225,9 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     'get_ui_language',
     'set_ui_language',
     'set_dock_color',
+    'get_start_page',
+    'set_start_page',
+    'set_theme',
     'resize_to_ratio',
     'open_control_panel',
     'open_external'
@@ -1057,6 +1286,9 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     get_ui_language: () => call('get_ui_language'),
     set_ui_language: (lang) => call('set_ui_language', { lang: String(lang || 'zh') }),
     set_dock_color: (color) => call('set_dock_color', { color: String(color || 'white') }),
+    get_start_page: () => call('get_start_page'),
+    set_start_page: (url) => call('set_start_page', { url: String(url == null ? '' : url) }),
+    set_theme: (mode) => call('set_theme', { mode: String(mode == null ? 'system' : mode) }),
     resize_to_ratio: (ratio, commit) => call('resize_to_ratio', { ratio: Number(ratio || 0.5), commit: commit !== false }),
     open_control_panel: () => call('open_control_panel'),
     // The settings panel's "About" row. It was wired straight to a command the
@@ -1176,33 +1408,129 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
   // constructable stylesheet attached to it applies the instant <html> is
   // created. Inline `padding: ... !important` (set below, and by React on
   // collapse) still wins over this, so it is only ever the first-frame floor.
+  const firstFramePaddingCss =
+    'html{padding-top:' + chromeMetrics.chrome + 'px!important;' +
+    'padding-left:' + chromeMetrics.rail + 'px!important;' +
+    // The rail is a spring that takes ~300ms; without this the padding jumps to
+    // its new value in one frame, leaving a full-width strip of *page* colour
+    // where the rail has not arrived yet (white on a dark theme, which is the
+    // flash that read as "the panel starts white"). Matching durations keep the
+    // page edge glued to the rail while it opens and closes.
+    'transition:padding-left 300ms cubic-bezier(0.22,1,0.36,1),padding-top 300ms cubic-bezier(0.22,1,0.36,1);' +
+    'box-sizing:border-box!important;}';
+  let firstFrameSheet = null;
+
   const installFirstFrameInset = () => {
-    const css =
-      'html{padding-top:' + __CHROME_H__ + 'px!important;' +
-      'padding-left:' + __SIDEBAR_W__ + 'px!important;' +
-      'box-sizing:border-box!important;}';
+    // A new tab is a brand-new document, and until the page paints anything the
+    // only thing on screen is the UA canvas. With the system in dark mode
+    // (`prefers-color-scheme: dark`) that canvas is pure black - measured
+    // rgb(18,18,18) for ~200ms between the tab switching and the first painted
+    // frame, which is the "it goes black before it loads" report. The shell is
+    // light at that moment (a fresh document has no `dark` class, so the shell
+    // renders light), so the hole is black next to a white chrome. Paint the
+    // canvas with the shell's own colour and hand it back once the page is
+    // parsed: releasing at DOMContentLoaded keeps dark sites dark instead of
+    // permanently bleaching pages that rely on the UA canvas.
+    // The canvas placeholder follows the shell's theme, not a hard-coded white:
+    // on a dark desktop the gap between the page and the chrome is exactly where
+    // a white sheet used to show through while the rail animated.
+    const css = firstFramePaddingCss + 'html{background-color:' + (shellDark ? '#000000' : '#ffffff') + '!important;}';
     try {
       if (!document.adoptedStyleSheets) return false;
       const sheet = new CSSStyleSheet();
       sheet.replaceSync(css);
-      document.adoptedStyleSheets = [sheet];
+      // Append instead of assigning: a page is allowed to own sheets too.
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+      firstFrameSheet = sheet;
       return true;
     } catch (_e) {
       return false;
     }
   };
 
+  const releaseFirstFrameBackground = () => {
+    if (!firstFrameSheet) return;
+    try {
+      firstFrameSheet.replaceSync(firstFramePaddingCss);
+    } catch (_e) {}
+    firstFrameSheet = null;
+  };
+
+  // The root scroller belongs to the page, so the UA paints it: a light
+  // 160,160,160 thumb down the middle of a black site, which is the one hard
+  // edge left in the dark theme. `scrollbar-color` repaints only the bar, so it
+  // cannot fight a page's own colours the way `color-scheme: dark` would, and a
+  // site that styles `::-webkit-scrollbar` itself still wins.
+  let pageThemeSheet = null;
+  const applyPageTheme = (dark) => {
+    try {
+      if (!document.adoptedStyleSheets) return;
+      if (!pageThemeSheet) {
+        pageThemeSheet = new CSSStyleSheet();
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, pageThemeSheet];
+      }
+      pageThemeSheet.replaceSync(
+        'html{scrollbar-color:' +
+          (dark ? 'rgba(255,255,255,0.30)' : 'rgba(15,23,42,0.30)') +
+          ' transparent;}'
+      );
+    } catch (_e) {}
+  };
+  // The broadcast script (theme changes after boot) reaches this through the
+  // window: it is evaluated separately and cannot close over this scope.
+  window.__diviewer_apply_page_theme__ = applyPageTheme;
+  applyPageTheme(shellDark);
+
+  // When does the page need the canvas back? Only one case: it opts into dark
+  // via `color-scheme`, which is the page telling the UA to paint the canvas
+  // dark. Overpainting that white would leave light-on-dark text unreadable
+  // (example.com), so hand it back as soon as that shows up.
+  //
+  // Every other page keeps the placeholder, and that is deliberate: a page's
+  // own root/body background covers it the moment it has one, so the colour is
+  // only ever visible while nothing is painted - which is exactly the hole that
+  // used to be black. Releasing earlier was worse: bilibili sets its body
+  // background (#f1f2f3) while the body is still 0px tall, so "the body has a
+  // colour" fires ~450ms in, the transparent `<html>` then exposes the dark UA
+  // canvas, and the tab sits black until the SPA finally paints at ~1.1s.
+  const pageWantsDarkCanvas = () => {
+    const de = document.documentElement;
+    if (!de) return false;
+    return String(getComputedStyle(de).colorScheme || '').indexOf('dark') !== -1;
+  };
+
+  let firstFrameWaited = 0;
+  let firstFramePolling = false;
+  const settleFirstFrameBackground = () => {
+    if (!firstFrameSheet || firstFramePolling) return;
+    firstFramePolling = true;
+    const step = () => {
+      if (!firstFrameSheet) {
+        firstFramePolling = false;
+        return;
+      }
+      if (pageWantsDarkCanvas() || firstFrameWaited >= 200) {
+        firstFramePolling = false;
+        releaseFirstFrameBackground();
+        return;
+      }
+      firstFrameWaited += 1;
+      setTimeout(step, 40);
+    };
+    step();
+  };
+
   const applyPageInset = () => {
     const de = document.documentElement;
     if (!de) return;
-    const height = __CHROME_H__;
+    const height = chromeMetrics.chrome;
     // Only seed the variables: React owns them afterwards (collapsing the shell
     // drops the insets back to 0) and re-seeding would undo that.
     if (!de.style.getPropertyValue('--diviewer-inset-top')) {
       de.style.setProperty('--diviewer-inset-top', height + 'px');
     }
     if (!de.style.getPropertyValue('--diviewer-inset-left')) {
-      de.style.setProperty('--diviewer-inset-left', __SIDEBAR_W__ + 'px');
+      de.style.setProperty('--diviewer-inset-left', chromeMetrics.rail + 'px');
     }
     de.style.setProperty('box-sizing', 'border-box', 'important');
     de.style.setProperty('padding-top', 'var(--diviewer-inset-top)', 'important');
@@ -1218,6 +1546,9 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
       (document.documentElement || document.body).appendChild(root);
     }
     root.style.cssText = 'position:fixed;inset:0;width:100vw;height:100vh;overflow:visible;pointer-events:none;background:transparent;z-index:2147483646;display:block;';
+    // `data-theme` is what the placeholder chrome styles off
+    // (`:host([data-theme="dark"])`), and React keeps it up to date afterwards.
+    root.setAttribute('data-theme', shellTheme);
     if (!root.hasAttribute('data-sidebar-visible')) {
       root.setAttribute('data-sidebar-visible', 'true');
     }
@@ -1237,15 +1568,17 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
     if (!shadow.getElementById('__diviewer_chrome_rail__')) {
       const rail = document.createElement('div');
       rail.id = '__diviewer_chrome_rail__';
-      rail.style.cssText = 'position:fixed;left:0;top:0;bottom:0;width:var(--diviewer-inset-left,' + __SIDEBAR_W__ + 'px);pointer-events:none;';
+      rail.style.cssText = 'position:fixed;left:0;top:0;bottom:0;width:var(--diviewer-inset-left,' + chromeMetrics.rail + 'px);pointer-events:none;';
       shadow.insertBefore(rail, shadow.firstChild);
     }
     if (!shadow.getElementById('__diviewer_chrome_frame__')) {
       const frame = document.createElement('div');
       frame.id = '__diviewer_chrome_frame__';
-      frame.style.cssText = 'position:fixed;left:0;top:0;right:0;height:var(--diviewer-inset-top,' + __CHROME_H__ + 'px);pointer-events:none;';
+      frame.style.cssText = 'position:fixed;left:0;top:0;right:0;height:var(--diviewer-inset-top,' + chromeMetrics.chrome + 'px);pointer-events:none;';
       shadow.insertBefore(frame, shadow.firstChild);
     }
+    const frame = shadow.getElementById('__diviewer_chrome_frame__');
+    if (frame) frame.classList.toggle('dark', shellDark);
 
     // Dynamically inserted <style> elements are not parsed by this WebView2
     // build (style.sheet stays null even for attached elements), so the shell
@@ -1307,12 +1640,19 @@ fn shared_shell_script(_app: &AppHandle) -> AppResult<String> {
   // re-append it once the document settled.
   document.addEventListener('DOMContentLoaded', applyPageInset, { once: true });
   window.addEventListener('load', applyPageInset, { once: true });
+  // Hand the canvas back the moment the page can paint its own: watch from here
+  // on, not only at DOMContentLoaded, because a booting SPA keeps `<html>`
+  // transparent well past the parse and the placeholder is what covers it.
+  setTimeout(settleFirstFrameBackground, 0);
+  // Nothing else to do on the placeholder: the inset stylesheet is already
+  // attached, and that is all this document is here to paint.
+  if (isWarmPlaceholder()) return;
 })();
 "##;
 
     Ok(template
-        .replace("__CHROME_H__", &SHELL_CHROME_HEIGHT.to_string())
-        .replace("__SIDEBAR_W__", &SHELL_SIDEBAR_WIDTH.to_string())
+        .replace("__SHELL_TIERS__", &shell_tiers_json())
+        .replace("__INITIAL_THEME_MODE__", &theme_mode)
         .replace("__DIVIEWER_CSS__", &css)
         .replace("__DIVIEWER_JS__", &js)
         .replace("__FONT_REGULAR__", &font_url(FONT_PATH_REGULAR))
@@ -1570,7 +1910,7 @@ fn persist_browser_state(app: &AppHandle, do_snap: bool) -> AppResult<()> {
         .and_then(|label| app.get_webview(label))
         .and_then(|view| view.url().ok())
         .map(|u| u.to_string())
-        .unwrap_or_else(|| state.home_url.clone());
+        .unwrap_or_else(|| state.home_url());
     update_persist(&state, |persist| {
         if !current_url.trim().is_empty() {
             persist.last_url = current_url.clone();
@@ -1852,7 +2192,7 @@ fn resize_to_ratio_impl(app: &AppHandle, ratio: f64, commit: bool) -> AppResult<
         active_webview(app)
             .and_then(|view| view.url().map_err(|err| err.to_string()))
             .map(|u| u.to_string())
-            .unwrap_or_else(|_| state.home_url.clone())
+            .unwrap_or_else(|_| state.home_url())
     } else {
         String::new()
     };
@@ -2063,6 +2403,60 @@ async fn set_hotkeys_enabled(app: AppHandle, state: tauri::State<'_, AppState>, 
     Ok(enabled)
 }
 
+/// Tell every webview that the bookmark list changed.
+///
+/// The rail that triggers a save lives inside one tab's document and the start
+/// page that renders the list lives inside another tab's document, so the
+/// `window` event the shell dispatches never reaches the page that shows the
+/// result - which reads exactly like "the bookmark button does nothing".
+/// Dispatching inside each webview is what keeps them in step without a reload.
+fn broadcast_bookmarks_changed(app: &AppHandle) {
+    const SCRIPT: &str =
+        "try{window.dispatchEvent(new CustomEvent('diviewer:bookmarks-changed'))}catch(_e){}";
+    for (_, view) in app.webviews() {
+        let _ = view.eval(SCRIPT);
+    }
+}
+
+/// Push the theme choice to every live webview.
+///
+/// Each tab is its own document with its own injected shell, so a choice made in
+/// one tab has to be replayed into the others — otherwise switching tabs shows a
+/// shell that is still on the previous theme. The resolved theme (`system` ->
+/// actual) is sent alongside the mode: the page cannot read the mode on its own,
+/// but every page can read `prefers-color-scheme`.
+fn theme_broadcast_script(mode: &str) -> String {
+    format!(
+        r##"
+(() => {{
+  const mode = '{mode}';
+  const dark = mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  const theme = dark ? 'dark' : 'light';
+  const host = document.getElementById('__diviewer_shared_root__');
+  if (host) host.setAttribute('data-theme', theme);
+  const shadow = host && host.shadowRoot;
+  const root = shadow ? shadow.querySelector('.diviewer-host-root') : null;
+  if (root) {{
+    root.classList.toggle('dark', dark);
+    root.setAttribute('data-theme', theme);
+  }}
+  const frame = shadow ? shadow.getElementById('__diviewer_chrome_frame__') : null;
+  if (frame) frame.classList.toggle('dark', dark);
+  if (window.__diviewer_apply_page_theme__) window.__diviewer_apply_page_theme__(dark);
+  window.dispatchEvent(new CustomEvent('diviewer:theme-mode', {{ detail: {{ mode, theme }} }}));
+  window.dispatchEvent(new CustomEvent('diviewer:theme-change', {{ detail: {{ theme }} }}));
+}})();
+"##
+    )
+}
+
+fn broadcast_theme(app: &AppHandle, mode: &str) {
+    let script = theme_broadcast_script(mode);
+    for (_, view) in app.webviews() {
+        let _ = view.eval(&script);
+    }
+}
+
 fn bookmarks_snapshot(state: &AppState) -> AppResult<Vec<BookmarkItem>> {
     let locked = state
         .data
@@ -2072,7 +2466,7 @@ fn bookmarks_snapshot(state: &AppState) -> AppResult<Vec<BookmarkItem>> {
 }
 
 fn add_bookmark_impl(state: &AppState, url: String, title: String) -> AppResult<Vec<BookmarkItem>> {
-    let bookmark = normalize_bookmark(&url, &title, &state.home_url)?;
+    let bookmark = normalize_bookmark(&url, &title, &state.home_url())?;
     update_persist(state, |persist| {
         persist.bookmarks.retain(|item| item.url != bookmark.url);
         persist.bookmarks.insert(0, bookmark.clone());
@@ -2084,7 +2478,7 @@ fn add_bookmark_impl(state: &AppState, url: String, title: String) -> AppResult<
 }
 
 fn remove_bookmark_impl(state: &AppState, url: String) -> AppResult<Vec<BookmarkItem>> {
-    let normalized_url = normalize_url_with_home(&url, &state.home_url);
+    let normalized_url = normalize_url_with_home(&url, &state.home_url());
     update_persist(state, |persist| {
         persist.bookmarks.retain(|item| item.url != normalized_url);
     })?;
@@ -2488,6 +2882,15 @@ fn create_browser_window(app: &AppHandle) -> AppResult<()> {
 
     let window = WindowBuilder::new(app, BROWSER_LABEL)
         .title(ui_text(ui_lang_zh, "DI-Viewer Browser", "DI-Viewer Browser"))
+        // Everything inside the window is painted by a child webview - the
+        // chrome and the page are one document. So whenever the old tab is
+        // hidden and the new one has not composited yet, the window itself is
+        // the only thing on screen, and its default surface is rgb(18,18,18):
+        // the whole client area - toolbar, tab strip and page - flashed dark
+        // for ~120ms on every new tab. White is what the warm document and the
+        // shell's first-frame overpaint already use for "nothing painted yet",
+        // so the gap now reads as an empty page instead of the app dying.
+        .background_color(Color(255, 255, 255, 255))
         .inner_size(initial.window_width, initial.window_height)
         .min_inner_size(600.0, 320.0)
         .position(start_x, start_y)
@@ -2579,6 +2982,10 @@ fn attach_browser_window_events(app: &AppHandle, window: &Window) {
             });
         }
         WindowEvent::Resized(_) => {
+            // `auto_resize` pulls every child webview back to the client
+            // origin, parked ones included, so put them back off-screen before
+            // the next frame - otherwise a resize silently un-parks them.
+            repark_tabs(&app_handle);
             // Resized fires continuously while dragging edges; debounce the
             // disk write instead of persisting on every tick.
             let state = app_handle.state::<AppState>();
@@ -2592,6 +2999,9 @@ fn attach_browser_window_events(app: &AppHandle, window: &Window) {
                 let state = app_for_resize.state::<AppState>();
                 if state.resize_seq.load(Ordering::SeqCst) == seq {
                     let _ = persist_browser_state(&app_for_resize, false);
+                    // The final WM_SIZE is the one `auto_resize` applies last.
+                    let app_main = app_for_resize.clone();
+                    let _ = app_for_resize.run_on_main_thread(move || repark_tabs(&app_main));
                 }
             });
         }
@@ -2624,16 +3034,48 @@ fn create_tab_webview(app: &AppHandle, label: &str, visible: bool) -> AppResult<
             .find(|tab| tab.label == label)
             .map(|tab| tab.url.clone())
             .unwrap_or_else(|| locked.persist.last_url.clone());
-        (state.home_url.clone(), url)
+        (state.home_url(), url)
     };
     let parsed = parse_url(&normalize_url_with_home(&url, &home_url))?;
     // The home page must load through the application protocol
     // (WebviewUrl::App) so the injected shell gets a valid IPC origin.
-    let webview_url = if parsed.as_str() == home_url {
+    // A brand-new webview has no frame until its first document loads, and an
+    // unframed webview is a black rectangle. Since every `target="_blank"` click
+    // creates one, that is what made a jump "go black first and display later" -
+    // measured 570ms of rgb(18,18,18), with `<html>` reporting a white background
+    // the whole time, so no page CSS could cover it.
+    //
+    // Give the webview an instant local document so it paints immediately, then
+    // navigate to the real URL. A navigation inside a webview that already has a
+    // frame keeps presenting the old frame until the new one is ready, so there
+    // is nothing left to flash.
+    //
+    // Only the bundled page can be loaded directly: it *is* a local resource.
+    // Everything else - including a user-chosen home such as limestart.cn - has
+    // to take the warm hop, because `WebviewUrl::App` can only address the
+    // bundle: routing a remote home through it (as the old `parsed == home_url`
+    // test did) loaded the built-in page instead and the custom home silently
+    // never appeared.
+    let is_builtin_home = is_internal_page(parsed.as_str());
+    let warm_target = if is_builtin_home {
+        None
+    } else {
+        Some(parsed.clone())
+    };
+    let webview_url = if is_builtin_home {
         WebviewUrl::App(PathBuf::from(LOCAL_HOME_RESOURCE))
     } else {
-        WebviewUrl::External(parsed)
+        WebviewUrl::App(PathBuf::from(LOCAL_WARM_RESOURCE))
     };
+    // The first navigation of a webview is dropped if it lands while the
+    // placeholder document is still loading - measured once at 14ms after
+    // `Started`, after which the tab sat on the placeholder forever. Drive the
+    // navigation from the placeholder's own `Finished` event instead of a
+    // timer, with a timer only as the fallback for a placeholder that never
+    // finishes.
+    let warm_navigated = Arc::new(AtomicBool::new(false));
+    let warm_for_load = warm_target.clone();
+    let warm_flag_for_load = warm_navigated.clone();
 
     let shell_script = shared_shell_script(app)?;
     let browser_args = webview_browser_args();
@@ -2652,6 +3094,14 @@ fn create_tab_webview(app: &AppHandle, label: &str, visible: bool) -> AppResult<
     );
 
     let builder = WebviewBuilder::new(label.to_string(), webview_url)
+        // Windows paints a webview that has never produced a frame with
+        // WebView2's own default, which follows the system theme - rgb(18,18,18)
+        // in dark mode. Neither the warm document nor the shell's first-frame
+        // overpaint can help there: both need a document that has already been
+        // composited. Alpha 0 makes the empty surface transparent instead of
+        // opaque, so the window's own (white) background shows through until the
+        // warm document paints ~100ms later.
+        .background_color(Color(255, 255, 255, 0))
         .user_agent(DESKTOP_BROWSER_USER_AGENT)
         .additional_browser_args(&browser_args)
         .initialization_script(shell_script)
@@ -2680,7 +3130,32 @@ fn create_tab_webview(app: &AppHandle, label: &str, visible: bool) -> AppResult<
             });
             NewWindowResponse::Deny
         })
-        .on_page_load(move |webview, _payload| {
+        .on_page_load(move |webview, payload| {
+            let url_text = payload.url().as_str().to_string();
+            push_log(
+                &app_for_load,
+                "native",
+                "page_load",
+                format!("{} {:?} {}", label_for_load, payload.event(), url_text),
+            );
+            if let Some(target) = warm_for_load.clone() {
+                let on_placeholder = url_text.contains("warm.html");
+                if on_placeholder
+                    && matches!(payload.event(), PageLoadEvent::Finished)
+                    && !warm_flag_for_load.swap(true, Ordering::SeqCst)
+                {
+                    // The placeholder has a frame now, so this navigation will
+                    // be presented as a document swap rather than into an empty
+                    // surface. Nothing else needs to run on it.
+                    match webview.navigate(target) {
+                        Ok(()) => {}
+                        Err(err) => {
+                            push_log(&app_for_load, "native", "warm", format!("failed:{err}"))
+                        }
+                    }
+                    return;
+                }
+            }
             let visible = app_for_load
                 .state::<AppState>()
                 .sidebar_visible
@@ -2696,11 +3171,43 @@ fn create_tab_webview(app: &AppHandle, label: &str, visible: bool) -> AppResult<
             let _ = sync_tab_from_browser_label(&app_for_load, &label_for_load);
         });
 
+    let hosts_before = direct_host_windows(&window);
+    // A tab that is not going to be presented right away is born parked: the
+    // window clips it away, so nothing of it is ever seen, while it still
+    // composites and therefore arrives on screen with a frame already painted.
+    // It used to be born on screen and hidden immediately, which cost the whole
+    // compositor and left a ~0.5s blank window when the tab was finally opened.
+    let start_x = if visible { 0.0 } else { PARK_OFFSET_X };
     let webview = window
-        .add_child(builder, LogicalPosition::new(0.0, 0.0), bounds)
+        .add_child(builder, LogicalPosition::new(start_x, 0.0), bounds)
         .map_err(|err| format!("Create tab webview failed: {err}"))?;
+    register_tab_host(app, label, &window, &hosts_before);
     if !visible {
-        let _ = webview.hide();
+        if let Ok(mut parked) = app.state::<AppState>().tab_parked.lock() {
+            parked.insert(label.to_string());
+        }
+    }
+    if let Some(target) = warm_target {
+        let h1 = app.clone();
+        let h2 = app.clone();
+        let fallback_flag = warm_navigated.clone();
+        let warm_label = label.to_string();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(WARM_FALLBACK_MS));
+            if fallback_flag.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            push_log(&h1, "native", "warm", format!("fallback:{warm_label}"));
+            let moved = warm_label.clone();
+            let h3 = h1.clone();
+            let _ = h1.run_on_main_thread(move || {
+                if let Some(view) = h2.get_webview(&moved) {
+                    if let Err(err) = view.navigate(target) {
+                        push_log(&h3, "native", "warm", format!("failed:{moved}:{err}"));
+                    }
+                }
+            });
+        });
     }
     push_log(app, "native", "create_tab_webview", label.to_string());
     Ok(webview)
@@ -2810,6 +3317,7 @@ async fn get_state(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResu
         }
     }
 
+    let home = state.home_url();
     Ok(FrontendState {
         last_url: snapshot.0.last_url,
         opacity: snapshot.0.window_opacity,
@@ -2828,6 +3336,9 @@ async fn get_state(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResu
             .lock()
             .map(|locked| locked.clone())
             .unwrap_or_default(),
+        start_page_builtin: home == app_protocol_home_url(),
+        start_page_url: home,
+        theme_mode: state.theme_mode(),
     })
 }
 
@@ -2883,9 +3394,122 @@ async fn set_dock_color(state: tauri::State<'_, AppState>, color: String) -> App
     Ok(normalized)
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StartPageConfig {
+    /// Effective home address: what a new tab and `go_home` open on.
+    url: String,
+    /// True when that is the start page bundled with the app.
+    builtin: bool,
+}
+
+fn start_page_config(state: &AppState) -> StartPageConfig {
+    let url = state.home_url();
+    StartPageConfig {
+        builtin: url == app_protocol_home_url(),
+        url,
+    }
+}
+
+#[tauri::command]
+async fn get_start_page(state: tauri::State<'_, AppState>) -> AppResult<StartPageConfig> {
+    Ok(start_page_config(&state))
+}
+
+/// Choose the shell theme: `light`, `dark`, or `system`.
+///
+/// Persisted *and* broadcast. The broadcast is what makes the choice stick
+/// visually: parked tabs keep their own live document, and each one re-resolves
+/// `system` against its own `prefers-color-scheme`, so a tab that was parked
+/// while the desktop switched to dark mode lands on the right side when it comes
+/// back, without a reload.
+#[tauri::command]
+async fn set_theme(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    mode: String,
+) -> AppResult<String> {
+    let code = theme_mode_code(&mode);
+    let normalized = theme_mode_str(code).to_string();
+    state.theme_mode.store(code, Ordering::Relaxed);
+    update_persist(&state, |persist| {
+        persist.theme_mode = normalized.clone();
+    })?;
+    broadcast_theme(&app, &normalized);
+    push_log(&app, "ui", "set_theme", normalized.clone());
+    Ok(normalized)
+}
+
+/// Point "home" at another address (or back at the built-in page).
+///
+/// Three things have to move together, or the setting reads as a no-op: the
+/// effective home in memory, the stored preference, and any tab that was sitting
+/// on the *old* home. That last one is what makes it visible immediately — the
+/// user changes the home page while looking at the home page.
+#[tauri::command]
+async fn set_start_page(
+    app: AppHandle,
+    state: tauri::State<'_, AppState>,
+    url: String,
+) -> AppResult<StartPageConfig> {
+    let requested = normalize_start_page(&url)?;
+    let next_home = requested.clone().unwrap_or_else(app_protocol_home_url);
+    let previous_home = state.home_url();
+    if next_home == previous_home {
+        return Ok(start_page_config(&state));
+    }
+
+    // Locks are taken one at a time on purpose: `save_history` holds `data` and
+    // then reads `home_url`, so nesting them the other way round here would be
+    // a deadlock waiting for the next save.
+    {
+        let mut slot = state
+            .home_url
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        *slot = next_home.clone();
+    }
+    update_persist(&state, |persist| {
+        persist.start_page_url = requested.unwrap_or_default();
+    })?;
+
+    let mut navigate_to: Option<String> = None;
+    {
+        let mut locked = state
+            .data
+            .lock()
+            .map_err(|_| "State lock poisoned".to_string())?;
+        let index = locked.active_tab.min(locked.tabs.len().saturating_sub(1));
+        // Only the tab in front is retargeted. Rewriting a hidden tab's URL
+        // without navigating its webview would leave the two disagreeing (the
+        // document still shows the old home), and navigating it behind the
+        // user's back is worse. Restoring a session later folds every old home
+        // onto the new one anyway (`normalize_url_with_home`).
+        if let Some(tab) = locked.tabs.get_mut(index) {
+            if tab.url == previous_home || is_internal_page(&tab.url) {
+                tab.url = next_home.clone();
+                tab.title = tab_title_from_url(&next_home);
+                navigate_to = Some(next_home.clone());
+            }
+        }
+    }
+
+    if let Some(target) = navigate_to {
+        update_persist(&state, |persist| {
+            persist.last_url = target.clone();
+            persist.window_visible = true;
+        })?;
+        let browser = active_webview(&app)?;
+        navigate_browser_to(&browser, &target)?;
+    }
+
+    push_log(&app, "ui", "set_start_page", next_home.clone());
+    Ok(start_page_config(&state))
+}
+
 #[tauri::command]
 async fn navigate(app: AppHandle, state: tauri::State<'_, AppState>, url: String) -> AppResult<String> {
-    let normalized = normalize_url_with_home(&url, &state.home_url);
+    let normalized = normalize_url_with_home(&url, &state.home_url());
     push_log(&app, "ui", "navigate", format!("start:{}", normalized));
     let browser = active_webview(&app)?;
     navigate_browser_to(&browser, &normalized)?;
@@ -2896,7 +3520,7 @@ async fn navigate(app: AppHandle, state: tauri::State<'_, AppState>, url: String
 
 #[tauri::command]
 async fn go_home(app: AppHandle, state: tauri::State<'_, AppState>) -> AppResult<String> {
-    let home = state.home_url.clone();
+    let home = state.home_url();
     navigate(app, state, home).await
 }
 
@@ -2954,16 +3578,25 @@ async fn get_bookmarks(state: tauri::State<'_, AppState>) -> AppResult<Vec<Bookm
 
 #[tauri::command]
 async fn add_bookmark(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     url: String,
     title: String,
 ) -> AppResult<Vec<BookmarkItem>> {
-    add_bookmark_impl(&state, url, title)
+    let result = add_bookmark_impl(&state, url, title)?;
+    broadcast_bookmarks_changed(&app);
+    Ok(result)
 }
 
 #[tauri::command]
-async fn remove_bookmark(state: tauri::State<'_, AppState>, url: String) -> AppResult<Vec<BookmarkItem>> {
-    remove_bookmark_impl(&state, url)
+async fn remove_bookmark(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    url: String,
+) -> AppResult<Vec<BookmarkItem>> {
+    let result = remove_bookmark_impl(&state, url)?;
+    broadcast_bookmarks_changed(&app);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -3030,51 +3663,302 @@ fn sync_shell_visibility(app: &AppHandle, view: &Webview) {
 /// scroll position, form input and media playback survive the switch. The OS
 /// window never moves, resizes, hides or shows - which is why switching no
 /// longer looks like the app restarting.
-/// Re-applies the window's size to one webview.
+
+/// `Window`'s native handle, in the shape the Win32 calls below expect.
+#[cfg(target_os = "windows")]
+fn window_hwnd(window: &Window) -> Option<HWND> {
+    let handle = window.window_handle().ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(raw) => Some(raw.hwnd.get() as HWND),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn collect_child_window(hwnd: HWND, lparam: isize) -> i32 {
+    let out = &mut *(lparam as *mut Vec<HWND>);
+    out.push(hwnd);
+    1
+}
+
+/// Every descendant window of `parent`, in enumeration order.
 ///
-/// WebView2 defers relayout while a controller is invisible, so a tab that was
-/// hidden when the window changed size comes back laid out for the *old* size:
-/// the page kept its 1220px viewport inside a 900px window and the shell's
-/// `100vh` rail centred its icons for a height that no longer existed. Showing
-/// the view alone does not guarantee the relayout in the same tick, but setting
-/// its bounds again while it is visible does.
-fn reflow_webview(window: &Window, view: &Webview) {
-    let Ok(size) = window.inner_size() else {
+/// A child webview is not a Tauri concept: adding one puts a host window under
+/// the OS window, and that host is what holds the pixels. Tauri can show/hide a
+/// webview but has no API for stacking two of them, so a switch that needs the
+/// outgoing page to stay on top has to go through these handles.
+#[cfg(target_os = "windows")]
+fn child_windows(parent: HWND) -> Vec<HWND> {
+    let mut found: Vec<HWND> = Vec::new();
+    unsafe {
+        EnumChildWindows(
+            parent,
+            Some(collect_child_window),
+            &mut found as *mut Vec<HWND> as isize,
+        );
+    }
+    found
+}
+
+/// How many tabs are remembered as recently used. Only the front tab is on
+/// screen now (see `park_background_tabs`); the list is kept so a window resize
+/// or a restore can order the work, and so its length stays bounded in a
+/// 20-tab session.
+const LIVE_TAB_LIMIT: usize = 4;
+
+/// Where a parked webview lives: far enough outside the client area that the
+/// parent window clips it away, while its host window stays visible so WebView2
+/// keeps the compositor and the last painted frame.
+const PARK_OFFSET_X: f64 = -20000.0;
+
+#[cfg(target_os = "windows")]
+fn direct_host_windows(window: &Window) -> Vec<isize> {
+    let Some(parent) = window_hwnd(window) else {
+        return Vec::new();
+    };
+    child_windows(parent)
+        .into_iter()
+        .filter(|hwnd| unsafe { GetParent(*hwnd) } == parent)
+        .map(|hwnd| hwnd as isize)
+        .collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn direct_host_windows(_window: &Window) -> Vec<isize> {
+    Vec::new()
+}
+
+/// Record which native host window belongs to `label`'s webview.
+///
+/// Tauri exposes no handle for a child webview, so the host is identified by
+/// diffing the parent window's children across `add_child`.
+#[cfg(target_os = "windows")]
+fn find_new_host(parent: HWND, before: &[isize]) -> Option<isize> {
+    child_windows(parent)
+        .into_iter()
+        .filter(|hwnd| unsafe { GetParent(*hwnd) } == parent)
+        .map(|hwnd| hwnd as isize)
+        .filter(|hwnd| !before.contains(hwnd))
+        .next_back()
+}
+
+#[cfg(target_os = "windows")]
+fn register_tab_host(app: &AppHandle, label: &str, window: &Window, before: &[isize]) {
+    let Some(parent) = window_hwnd(window) else {
         return;
     };
+    if let Some(host) = find_new_host(parent, before) {
+        if let Ok(mut map) = app.state::<AppState>().tab_hosts.lock() {
+            map.insert(label.to_string(), host);
+        }
+        return;
+    }
+    // Not there yet: WebView2 finished constructing the controller after
+    // `add_child` returned. Poll off the main thread rather than blocking it.
+    let app_handle = app.clone();
+    let tab_label = label.to_string();
+    let before = before.to_vec();
+    let parent_raw = parent as isize;
+    thread::spawn(move || {
+        for _ in 0..80 {
+            thread::sleep(Duration::from_millis(25));
+            if let Some(host) = find_new_host(parent_raw as HWND, &before) {
+                if let Ok(mut map) = app_handle.state::<AppState>().tab_hosts.lock() {
+                    map.insert(tab_label, host);
+                }
+                return;
+            }
+        }
+        push_log(&app_handle, "native", "tab_host", format!("missing:{tab_label}"));
+    });
+}
+
+#[cfg(not(target_os = "windows"))]
+fn register_tab_host(_app: &AppHandle, _label: &str, _window: &Window, _before: &[isize]) {}
+
+fn tab_host_snapshot(app: &AppHandle) -> Vec<(String, isize)> {
+    app.state::<AppState>()
+        .tab_hosts
+        .lock()
+        .map(|map| map.iter().map(|(label, hwnd)| (label.clone(), *hwnd)).collect())
+        .unwrap_or_default()
+}
+
+fn forget_tab_host(app: &AppHandle, label: &str) {
+    if let Ok(mut map) = app.state::<AppState>().tab_hosts.lock() {
+        map.remove(label);
+    }
+    if let Ok(mut mru) = app.state::<AppState>().tab_mru.lock() {
+        mru.retain(|item| item != label);
+    }
+    if let Ok(mut parked) = app.state::<AppState>().tab_parked.lock() {
+        parked.remove(label);
+    }
+}
+
+/// Mark `label` as the most recently used tab.
+fn touch_tab_mru(app: &AppHandle, label: &str) {
+    if let Ok(mut mru) = app.state::<AppState>().tab_mru.lock() {
+        mru.retain(|item| item != label);
+        mru.push(label.to_string());
+        let overflow = mru.len().saturating_sub(LIVE_TAB_LIMIT * 2);
+        if overflow > 0 {
+            mru.drain(0..overflow);
+        }
+    }
+}
+
+/// Give `label` the focus, which is what puts it in front.
+///
+/// WebView2 does not stack its controllers by window z-order: the visible
+/// pixels come from a DirectComposition tree, so `SetWindowPos` on a tab's host
+/// window reports success and nothing moves (measured - pushing a background
+/// tab to HWND_TOP left the front page untouched). Focus is the ordering
+/// signal that does work: the focused controller is composited on top, and a
+/// page that has been sitting behind still has a frame, so the swap is
+/// instantaneous and nothing goes blank.
+fn focus_tab(app: &AppHandle, label: &str) {
+    let Some(view) = app.get_webview(label) else {
+        push_log(app, "native", "focus", format!("missing:{label}"));
+        return;
+    };
+    match view.set_focus() {
+        Ok(()) => {}
+        Err(err) => push_log(app, "native", "focus", format!("failed:{label}:{err}")),
+    }
+    sync_shell_visibility(app, &view);
+}
+
+/// Put every tab except `front` back off-screen.
+///
+/// Not "keep the last few alive" any more: only one webview may be on screen at
+/// a time. WebView2 gives no way to raise an existing controller above one that
+/// was created after it - measured on a five-tab strip, `show()` and
+/// `set_focus()` both reported success while the page created last kept the
+/// pixels. Leaving a single candidate on screen makes that ambiguity impossible.
+///
+/// Parking is a position change, never a `hide()`: the controller stays
+/// visible, so it keeps compositing, keeps the frame it painted, and comes back
+/// without a blank window.
+fn park_background_tabs(app: &AppHandle, window: &Window, front: &str) {
+    for (label, _) in tab_host_snapshot(app) {
+        if label != front {
+            park_tab(app, window, &label);
+        }
+    }
+}
+
+/// The window-sized rect a tab's child webview occupies, shifted by `offset_x`.
+fn tab_rect(window: &Window, offset_x: f64) -> Option<Rect> {
+    let size = window.inner_size().ok()?;
     let scale = window.scale_factor().unwrap_or(1.0).max(0.01);
     let logical = LogicalSize::new(
         (size.width as f64 / scale).max(1.0),
         (size.height as f64 / scale).max(1.0),
     );
-    if let Err(err) = view.set_size(Size::Logical(logical)) {
-        eprintln!("[diviewer-log] reflow:set_size:failed {err}");
+    Some(Rect {
+        position: LogicalPosition::new(offset_x, 0.0).into(),
+        size: logical.into(),
+    })
+}
+
+/// Move a parked tab further out (and resize it for the current window), so a
+/// window resize cannot leave it sitting at the origin after `auto_resize`
+/// pulled it back in.
+fn apply_park_bounds(app: &AppHandle, window: &Window, label: &str) {
+    place_tab(app, window, label, PARK_OFFSET_X);
+}
+
+/// Put a tab's webview at `offset_x` with the window's current size.
+///
+/// `Webview::set_size` cannot be used to bring a tab back: the runtime keeps
+/// whatever position the webview already had (`WebviewMessage::SetSize` only
+/// replaces `bounds.size`), so a parked tab stays off-screen and handing it the
+/// focus just blanks the window. Position and size have to travel together.
+fn place_tab(app: &AppHandle, window: &Window, label: &str, offset_x: f64) {
+    let Some(view) = app.get_webview(label) else {
+        return;
+    };
+    let Some(rect) = tab_rect(window, offset_x) else {
+        return;
+    };
+    if let Err(err) = view.set_bounds(rect) {
+        push_log(app, "native", "place", format!("failed:{label}:{err}"));
+    }
+}
+
+fn park_tab(app: &AppHandle, window: &Window, label: &str) {
+    let parked_already = app
+        .state::<AppState>()
+        .tab_parked
+        .lock()
+        .map(|parked| parked.contains(label))
+        .unwrap_or(true);
+    if parked_already {
+        return;
+    }
+    apply_park_bounds(app, window, label);
+    if let Ok(mut parked) = app.state::<AppState>().tab_parked.lock() {
+        parked.insert(label.to_string());
+    }
+}
+
+/// Bring a tab back to the window's own geometry. Run unconditionally on every
+/// switch: it re-applies the size as well, which WebView2 defers while a
+/// controller has been out of view.
+fn reveal_tab(app: &AppHandle, window: &Window, label: &str) {
+    place_tab(app, window, label, 0.0);
+    if let Ok(mut parked) = app.state::<AppState>().tab_parked.lock() {
+        parked.remove(label);
+    }
+}
+
+/// Re-park every parked tab, after a window resize pulled them back to the
+/// origin through `auto_resize`.
+fn repark_tabs(app: &AppHandle) {
+    let parked: Vec<String> = app
+        .state::<AppState>()
+        .tab_parked
+        .lock()
+        .map(|parked| parked.iter().cloned().collect())
+        .unwrap_or_default();
+    if parked.is_empty() {
+        return;
+    }
+    let Ok(window) = browser_window(app) else {
+        return;
+    };
+    for label in parked {
+        apply_park_bounds(app, &window, &label);
     }
 }
 
 fn present_tab(app: &AppHandle, target_label: &str) -> AppResult<()> {
     let window = browser_window(app)?;
     let target = ensure_tab_webview(app, target_label)?;
-    // Hide first, then show: two visible webviews for a frame paints two chromes
-    // on top of each other, which reads as a flash.
-    for label in browser_labels(app) {
-        if label == target_label {
-            continue;
-        }
-        if let Some(other) = app.get_webview(&label) {
-            let _ = other.hide();
-        }
-    }
     apply_saved_window_state(app, &window)?;
-    let _ = target.show();
-    reflow_webview(&window, &target);
+    touch_tab_mru(app, target_label);
+
     if !window.is_visible().unwrap_or(true) {
         let _ = window.show();
     }
     let _ = window.unminimize();
     let _ = window.set_focus();
-    let _ = target.set_focus();
-    sync_shell_visibility(app, &target);
+
+    // Order matters, and every step is load-bearing:
+    //
+    // 1. `reveal_tab` moves the target back on screen. That position change is
+    //    what restores its pixels - it is invisible while it happens because
+    //    the page being left is still the one in front.
+    // 2. `show()` re-registers the visual, which is the only ordering signal
+    //    WebView2 honours for a controller that already exists.
+    // 3. `focus_tab` then makes it the page input goes to.
+    // 4. Finally the outgoing tabs go back off-screen, now that they can no
+    //    longer be seen.
+    reveal_tab(app, &window, target_label);
+    let _ = target.show();
+    focus_tab(app, target_label);
+    park_background_tabs(app, &window, target_label);
     Ok(())
 }
 
@@ -3134,14 +4018,10 @@ fn new_tab_impl(app: &AppHandle, url: &str) -> AppResult<String> {
     let state = app.state::<AppState>();
     push_log(app, "ui", "new_tab", format!("start:{}", url));
 
-    let target = normalize_url_with_home(
-        if url.trim().is_empty() {
-            state.home_url.as_str()
-        } else {
-            url
-        },
-        &state.home_url,
-    );
+    let target = {
+        let home = state.home_url();
+        normalize_url_with_home(if url.trim().is_empty() { home.as_str() } else { url }, &home)
+    };
 
     let label = {
         let mut locked = state
@@ -3193,24 +4073,27 @@ async fn close_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i32
             .data
             .lock()
             .map_err(|_| "State lock poisoned".to_string())?;
+        // Separate lock from `data`, so taking it here is safe: closing the last
+        // tab resets it to home, and home is whatever the user set.
+        let home = state.home_url();
 
         if locked.tabs.is_empty() {
             ClosePlan {
                 removed_label: None,
                 next_label: BROWSER_LABEL.to_string(),
-                next_url: state.home_url.clone(),
+                next_url: home,
                 reset_to_home: true,
                 switch_now: true,
             }
         } else if locked.tabs.len() == 1 {
             let label = locked.tabs[0].label.clone();
-            locked.tabs[0].url = state.home_url.clone();
-            locked.tabs[0].title = tab_title_from_url(&state.home_url);
+            locked.tabs[0].url = home.clone();
+            locked.tabs[0].title = tab_title_from_url(&home);
             locked.active_tab = 0;
             ClosePlan {
                 removed_label: None,
                 next_label: label,
-                next_url: state.home_url.clone(),
+                next_url: home,
                 reset_to_home: true,
                 switch_now: true,
             }
@@ -3245,6 +4128,7 @@ async fn close_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i32
     // other tab's document - is untouched, which is what makes closing a tab
     // instant and non-disruptive.
     if let Some(removed_label) = plan.removed_label.as_deref() {
+        forget_tab_host(&app, removed_label);
         if let Some(view) = app.get_webview(removed_label) {
             let _ = view.close();
         }
@@ -3267,14 +4151,6 @@ async fn close_tab(app: AppHandle, state: tauri::State<'_, AppState>, index: i32
             navigate_browser_to(&view, &plan.next_url)?;
         }
         present_tab(&app, &active_label)?;
-        for label in browser_labels(&app) {
-            if label == active_label {
-                continue;
-            }
-            if let Some(other) = app.get_webview(&label) {
-                let _ = other.hide();
-            }
-        }
     }
 
     let next_url = plan.next_url;
@@ -3493,13 +4369,18 @@ pub fn run() {
                 }
             }));
 
-            let home_url = resolve_home_url(&app.handle().clone());
             let mut persist = read_json_or_default::<PersistedState>(
                 &history_path,
                 &runtime_log_path,
                 "history_read",
                 append_runtime_log,
             );
+            // Home has to be resolved *after* the persisted state is read: it is
+            // whichever address the settings panel stored, and the tab URLs
+            // below are folded onto it.
+            let home_url = resolve_home_url(&app.handle().clone(), &persist.start_page_url);
+            // Read before `persist` moves into the runtime state below.
+            let theme_mode = theme_mode_code(&persist.theme_mode);
             persist.last_url = normalize_url_with_home(&persist.last_url, &home_url);
             persist.tab_urls = sanitize_tab_urls(persist.tab_urls, &home_url);
             if persist.tab_urls.is_empty() {
@@ -3545,7 +4426,7 @@ pub fn run() {
                 history_path,
                 hotkeys_path,
                 runtime_log_path,
-                home_url,
+                home_url: Mutex::new(home_url),
                 ui_lang_zh: AtomicBool::new(ui_lang_zh),
                 data: Mutex::new(RuntimeState {
                     tabs: initial_tabs,
@@ -3565,6 +4446,10 @@ pub fn run() {
                 log_store: Mutex::new(Vec::new()),
                 applied_effects: Mutex::new(HashMap::new()),
                 applied_flags: Mutex::new(HashMap::new()),
+                tab_hosts: Mutex::new(HashMap::new()),
+                tab_mru: Mutex::new(Vec::new()),
+                tab_parked: Mutex::new(HashSet::new()),
+                theme_mode: AtomicU8::new(theme_mode),
             });
 
             create_browser_window(&app.handle().clone()).map_err(std::io::Error::other)?;
@@ -3623,6 +4508,9 @@ pub fn run() {
             set_ui_language,
             get_dock_color,
             set_dock_color,
+            get_start_page,
+            set_start_page,
+            set_theme,
             navigate,
             go_home,
             go_back,
@@ -3696,6 +4584,58 @@ mod tests {
             normalize_url_with_home("localhost:3000", home),
             "https://localhost:3000"
         );
+    }
+
+    /// Blank means "built-in page", so the settings panel can clear the custom
+    /// address instead of forcing the user to retype the bundled one.
+    #[test]
+    fn start_page_blank_and_builtin_fold_to_none() {
+        for empty in ["", "   ", "\n\t"] {
+            assert_eq!(normalize_start_page(empty), Ok(None), "input {empty:?}");
+        }
+        // Tying the bundled page's own address back in means the same thing as
+        // leaving the field blank.
+        assert_eq!(
+            normalize_start_page("http://tauri.localhost/lucid-start-page/index.html"),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn start_page_accepts_plain_hosts_and_upgrades_scheme() {
+        for input in ["limestart.cn", "https://limestart.cn", "https://limestart.cn/"] {
+            assert_eq!(
+                normalize_start_page(input),
+                Ok(Some("https://limestart.cn/".to_string())),
+                "input {input:?}"
+            );
+        }
+        assert_eq!(
+            normalize_start_page("http://localhost:5173/x"),
+            Ok(Some("http://localhost:5173/x".to_string()))
+        );
+    }
+
+    /// A typed-in `ftp://nope` used to be silently stored as `https://ftp//nope`:
+    /// the https:// prefix went on first, so the leftover `://` read as a path
+    /// and the host parsed as the very plausible-looking `ftp`. Reject the
+    /// scheme before the prefix, and never let a non-http(s) scheme through.
+    #[test]
+    fn start_page_rejects_foreign_schemes() {
+        for bad in [
+            "ftp://nope.example",
+            "file:///etc/passwd",
+            "javascript://alert(1)",
+            "chrome://settings",
+        ] {
+            assert!(
+                normalize_start_page(bad).is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+        // No `://` at all, so this is treated as a host - and the port is not a
+        // number, so it still fails to parse rather than being stored.
+        assert!(normalize_start_page("javascript:alert(1)").is_err());
     }
 
     /// The width bar publishes a frame every animation frame, so a started-at

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DI-Viewer</title>
+    <style>
+      /*
+        Placeholder shown while a brand-new tab loads its real URL.
+
+        A webview that has never painted is a black rectangle, so a new tab used
+        to go black until the target site responded. This page renders instantly
+        (it is a single white box served from the app bundle), which gives the
+        webview its first frame immediately; the navigation to the real URL then
+        happens inside a webview that already has something on screen, and the
+        browser keeps presenting this frame until the new page is ready.
+
+        Keep it to one box: the injected shell draws the chrome around it, and
+        anything else here would be visible during the wait.
+      */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #ffffff;
+      }
+      .warm {
+        height: 100%;
+        background: #ffffff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="warm"></div>
+  </body>
+</html>

@@ -308,6 +308,23 @@ pub(crate) struct PersistedState {
     pub(crate) ui_language: String,
     #[serde(default = "default_dock_color")]
     pub(crate) dock_color: String,
+    /// Address a new tab (and `go_home`) opens on. Empty means the built-in
+    /// start page served from the app bundle; anything else is used verbatim.
+    ///
+    /// Stored rather than derived from `last_url` because those are two
+    /// different things: `last_url` is wherever the user last was, and setting a
+    /// custom home (say limestart.cn) must not be undone by the next navigation.
+    #[serde(default)]
+    pub(crate) start_page_url: String,
+    /// `light` | `dark` | `system`. Missing in files written before the theme
+    /// existed, which is exactly the `system` case: those users never chose.
+    ///
+    /// The shell used to *infer* its theme from the open page's `.dark` class,
+    /// so every new tab started light and a dark start page leaked its theme
+    /// into the chrome. The choice belongs to the app, not to whatever page
+    /// happens to be in front.
+    #[serde(default = "default_theme_mode")]
+    pub(crate) theme_mode: String,
 }
 
 impl Default for PersistedState {
@@ -331,8 +348,14 @@ impl Default for PersistedState {
             active_tab_index: 0,
             ui_language: String::new(),
             dock_color: default_dock_color(),
+            start_page_url: String::new(),
+            theme_mode: default_theme_mode(),
         }
     }
+}
+
+pub(crate) fn default_theme_mode() -> String {
+    "system".to_string()
 }
 
 pub(crate) fn default_dock_color() -> String {
